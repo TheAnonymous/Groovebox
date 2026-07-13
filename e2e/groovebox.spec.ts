@@ -31,8 +31,11 @@ test("zeigt das vollständige Desktop-Instrument ohne Laufzeitfehler", async ({ 
 test("bearbeitet Steps, Details und stellt Autosave nach Reload wieder her", async ({ page }) => {
   const step = page.locator('.gb-step[data-bar="0"][data-step="1"]');
   await step.click();
-  await expect(step).toHaveClass(/gb-step--normal/);
+  await expect(step).toHaveClass(/is-selected/);
+  await expect(step).toHaveClass(/gb-step--off/);
   await expect(page.getByRole("heading", { name: "Step-Details" })).toBeVisible();
+  await step.click();
+  await expect(step).toHaveClass(/gb-step--normal/);
   await page.getByLabel("Dynamik").selectOption("accent");
   await expect(page.locator('.gb-step[data-bar="0"][data-step="1"]')).toHaveClass(/gb-step--accent/);
   await expect(page.locator("[data-save-status]")).toContainText("gespeichert", { timeout: 2_000 });
@@ -58,7 +61,11 @@ test("speichert projektweite Klangfarben und bietet verständliche Tooltips", as
 });
 
 test("bedient sechs Drumrollen mit Konflikten, Layer-Limit und Fokus", async ({ page }) => {
-  await page.locator('.gb-step[data-bar="0"][data-step="0"]').click();
+  const step = page.locator('.gb-step[data-bar="0"][data-step="0"]');
+  const initialTone = (await step.getAttribute("class"))!.match(/gb-step--\w+/)![0];
+  await step.click();
+  await expect(step).toHaveClass(new RegExp(initialTone));
+  await expect(step).toHaveAttribute("title", /Erneuter Klick/);
   await expect(page.getByRole("heading", { name: "Step-Details" })).toBeVisible();
   const kick = page.getByRole("button", { name: "Kick" });
   const closed = page.getByRole("button", { name: "Closed Hat" });
@@ -121,6 +128,8 @@ test("bedient Spuren, Szenen und Undo mit Tastatur", async ({ page }) => {
   const step = page.locator('.gb-step[data-bar="0"][data-step="0"]');
   const original = await step.getAttribute("class");
   const originalTone = original!.match(/gb-step--\w+/)?.[0];
+  await step.click();
+  await expect(step).toHaveClass(new RegExp(originalTone!));
   await step.click();
   await page.keyboard.press("Control+z");
   await expect(step).toHaveClass(new RegExp(originalTone!));

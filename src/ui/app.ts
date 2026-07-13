@@ -194,7 +194,7 @@ export class GrooveboxApp {
                 <span><i class="gb-key gb-key--normal">•</i> Normal</span>
                 <span><i class="gb-key gb-key--accent">!</i> Akzent</span>
                 <span><i class="gb-key gb-key--variation">≈</i> Variation</span>
-                <span class="gb-legend__tip">Klicken wechselt: Aus → Normal → Akzent → Variation → Aus</span>
+                <span class="gb-legend__tip">Erster Klick wählt aus · erneuter Klick wechselt: Aus → Normal → Akzent → Variation → Aus</span>
               </footer>
             </section>
             <aside class="gb-inspector" aria-label="Details und Klang">
@@ -307,7 +307,9 @@ export class GrooveboxApp {
     const symbol = tone === "off" ? "—" : tone === "accent" ? "!" : tone === "variation" ? "≈" : tone === "ghost" ? "·" : "•";
     const stateLabel = tone === "off" ? "Aus" : tone === "accent" ? "Akzent" : tone === "variation" ? "Variation" : tone === "ghost" ? "Leise" : "Normal";
     const nextLabel = tone === "off" ? "Normal" : tone === "normal" || tone === "ghost" ? "Akzent" : tone === "accent" ? "Variation" : "Aus";
-    return `<button class="gb-step gb-step--${tone} ${selected ? "is-selected" : ""} ${playing ? "is-playing" : ""}" type="button" data-action="cycle-step" data-bar="${bar}" data-step="${index}" data-focus-key="step-${bar}-${index}" aria-pressed="${step.enabled}" aria-label="Takt ${bar + 1}, Step ${index + 1}: ${stateLabel}. Nächster Zustand ${nextLabel}." title="${stateLabel} · Klick: ${nextLabel}"><span>${symbol}</span></button>`;
+    const interactionLabel = selected ? `Ausgewählt. Erneuter Klick: ${nextLabel}.` : "Klick zum Auswählen.";
+    const title = selected ? `${stateLabel} · Erneuter Klick: ${nextLabel}` : `${stateLabel} · Klick: Details auswählen`;
+    return `<button class="gb-step gb-step--${tone} ${selected ? "is-selected" : ""} ${playing ? "is-playing" : ""}" type="button" data-action="select-or-cycle-step" data-bar="${bar}" data-step="${index}" data-focus-key="step-${bar}-${index}" aria-pressed="${step.enabled}" aria-label="Takt ${bar + 1}, Step ${index + 1}: ${stateLabel}. ${interactionLabel}" title="${title}"><span>${symbol}</span></button>`;
   }
 
   private stepInspector(state: AppState, step: ReturnType<typeof selectedStep>, position: AppState["ui"]["selectedStep"]): string {
@@ -318,7 +320,7 @@ export class GrooveboxApp {
     const role = track === "drums" ? null : currentRole(track, step);
     return `<section class="bu-card gb-detail-card"><div class="gb-panel-heading"><p class="gb-eyebrow">TAKT ${position.bar + 1} · STEP ${position.step + 1}</p><h2>Step-Details</h2></div>
       <div class="gb-detail-fields ${step.enabled ? "" : "is-disabled"}">
-        ${!step.enabled ? "<p class=\"gb-inline-note\">Dieser Step ist aus. Klicke ihn im Raster einmal an, um Details zu bearbeiten.</p>" : ""}
+        ${!step.enabled ? "<p class=\"gb-inline-note\">Dieser Step ist aus. Klicke den ausgewählten Step im Raster erneut an, um ihn einzuschalten.</p>" : ""}
         <label class="bu-field"><span class="bu-field__label">Dynamik</span><select class="bu-select" data-change="step-dynamics" ${step.enabled ? "" : "disabled"}>${DYNAMICS.map((dynamic) => option(dynamic, DYNAMIC_LABELS[dynamic], step.dynamics)).join("")}</select><span class="bu-field__help">Wie deutlich dieser Schritt hörbar ist.</span></label>
         <label class="bu-field"><span class="bu-field__label">Länge</span><select class="bu-select" data-change="step-length" ${step.enabled ? "" : "disabled"}>${STEP_LENGTHS.map((length) => option(length, LENGTH_LABELS[length], step.length)).join("")}</select><span class="bu-field__help">Kurze Töne federn, lange Töne verbinden.</span></label>
         ${track === "drums" ? this.drumVoiceControls(step) : `<label class="bu-field"><span class="bu-field__label">Tonrolle</span><select class="bu-select" data-change="step-role" ${step.enabled ? "" : "disabled"}>${roleOptions(track).map((entry) => option(entry.value, entry.label, role!.value)).join("")}</select><span class="bu-field__help">Nur passende Skalentöne sind möglich.</span></label>`}
@@ -442,7 +444,7 @@ export class GrooveboxApp {
     else if (action === "select-track") this.store.dispatch({ type: "ui/select-track", track: button.dataset.track as TrackKind });
     else if (action === "mute") this.store.dispatch({ type: "mix/mute", track: button.dataset.track as TrackKind });
     else if (action === "solo") this.store.dispatch({ type: "mix/solo", track: button.dataset.track as TrackKind });
-    else if (action === "cycle-step") this.store.dispatch({ type: "step/cycle", bar: Number(button.dataset.bar), step: Number(button.dataset.step) });
+    else if (action === "select-or-cycle-step") this.selectOrCycleStep(Number(button.dataset.bar), Number(button.dataset.step));
     else if (action === "drum-voice") this.store.dispatch({ type: "step/drum-voice", voice: button.dataset.voice as DrumVoice });
     else if (action === "preset") this.store.dispatch({ type: "project/preset", track: this.store.getState().ui.selectedTrack, value: button.dataset.preset as SoundPresetId });
     else if (action === "toggle-lock") this.store.dispatch({ type: "ui/toggle-lock", bar: Number(button.dataset.bar) });
@@ -481,6 +483,12 @@ export class GrooveboxApp {
     } else {
       await this.audio.start(this.store.getState().ui.selectedScene);
     }
+  }
+
+  private selectOrCycleStep(bar: number, step: number): void {
+    const selected = this.store.getState().ui.selectedStep;
+    const type = selected?.bar === bar && selected.step === step ? "step/cycle" : "ui/select-step";
+    this.store.dispatch({ type, bar, step });
   }
 
   private selectScene(scene: number): void {
