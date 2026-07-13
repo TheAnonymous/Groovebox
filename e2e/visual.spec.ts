@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page, browserName }) => {
   test.skip(browserName !== "chromium", "Referenzbilder werden in Chromium gepflegt");
-  await page.goto("/");
+  await page.goto("./");
   await page.evaluate(() => localStorage.clear());
   await page.evaluate(() => document.fonts.ready);
 });

@@ -4,6 +4,8 @@ Eine vollständig clientseitige Synthwave-Groovebox für musikalische
 Einsteiger. Vier Szenen, fünf Instrumente und ein 4×16-Step-Sequencer laufen
 direkt im Browser. Alle Klänge werden lokal mit Tone.js synthetisiert.
 
+**Live:** https://theanonymous.github.io/Groovebox/
+
 ## Entwicklung
 
 ```bash
@@ -30,3 +32,6 @@ aktuellen Browserprofils gespeichert. Unterstützt wird eine Desktop-Fläche ab
 
 Die vendorte BraunUi-Version und ihre Lizenzen sind in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) dokumentiert.
+
+Jeder Push auf `main` wird nach erfolgreichen Unit-Tests automatisch über
+GitHub Pages veröffentlicht.
