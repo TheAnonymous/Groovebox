@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <pattern id="variation" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="4" height="8" fill="#17a7a2" />
+      <rect x="4" width="4" height="8" fill="#86d1cb" />
+    </pattern>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="7" fill="#f1f0e9" stroke="#11110f" stroke-width="4" />
+  <rect x="9" y="9" width="20" height="20" fill="#df8d12" stroke="#11110f" stroke-width="2" />
+  <rect x="35" y="9" width="20" height="20" fill="#17a7a2" stroke="#11110f" stroke-width="2" />
+  <rect x="9" y="35" width="20" height="20" fill="#eeede7" stroke="#77766f" stroke-width="2" />
+  <rect x="35" y="35" width="20" height="20" fill="url(#variation)" stroke="#11110f" stroke-width="2" />
+  <path d="M19 14v7M19 25h.01" stroke="#211400" stroke-width="3" stroke-linecap="square" />
+  <circle cx="45" cy="19" r="2.25" fill="#061c1b" />
+  <path d="M15 45h8" stroke="#77766f" stroke-width="2" />
+  <circle cx="45" cy="45" r="2.25" fill="#061c1b" />
+</svg>

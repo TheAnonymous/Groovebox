@@ -20,6 +20,7 @@ test("zeigt das vollständige Desktop-Instrument ohne Laufzeitfehler", async ({ 
 
   await expect(page.getByRole("heading", { name: "Mixer" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Drums" })).toBeVisible();
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", "/Groovebox/favicon.svg");
   await expect(page.locator(".gb-step")).toHaveCount(64);
   await expect(page.locator(".gb-scene")).toHaveCount(4);
   await expect(page.locator(".gb-channel")).toHaveCount(5);
