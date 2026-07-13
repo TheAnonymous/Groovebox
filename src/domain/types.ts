@@ -1,4 +1,5 @@
-export const SCHEMA_VERSION = 1 as const;
+export const SCHEMA_VERSION = 2 as const;
+export const LEGACY_SCHEMA_VERSION = 1 as const;
 export const SCENE_COUNT = 4;
 export const TRACK_COUNT = 5;
 export const BARS_PER_SCENE = 4;
@@ -31,6 +32,15 @@ export const CONTOURS = ["balanced", "rising", "falling", "callResponse"] as con
 export const CHORD_COLORS = ["triad", "open", "suspended", "rich"] as const;
 export const MACRO_KINDS = ["warmth", "drive", "space", "motion", "density"] as const;
 export const VARIATION_AMOUNTS = ["subtle", "lively", "bold"] as const;
+export const DRUM_VOICES = ["kick", "snare", "clap", "closedHat", "openHat", "tom"] as const;
+
+export const SOUND_PRESETS = {
+  drums: ["neon84", "pressure", "night"],
+  bass: ["round", "saw", "pulse"],
+  chords: ["analog", "glass", "stab"],
+  lead: ["clear", "pluck", "laser"],
+  pad: ["velvet", "choir", "cosmos"],
+} as const;
 
 export type RootNote = (typeof ROOT_NOTES)[number];
 export type Scale = (typeof SCALES)[number];
@@ -42,6 +52,9 @@ export type PhraseContour = (typeof CONTOURS)[number];
 export type ChordColor = (typeof CHORD_COLORS)[number];
 export type MacroKind = (typeof MACRO_KINDS)[number];
 export type VariationAmount = (typeof VARIATION_AMOUNTS)[number];
+export type DrumVoice = (typeof DRUM_VOICES)[number];
+export type SoundPresetId = (typeof SOUND_PRESETS)[TrackKind][number];
+export type SoundPresetMap = { [K in TrackKind]: (typeof SOUND_PRESETS)[K][number] };
 
 export interface Step {
   enabled: boolean;
@@ -49,6 +62,7 @@ export interface Step {
   variation: number;
   degreeOffset: number;
   length: StepLength;
+  drumVoices: DrumVoice[];
 }
 
 export interface BarPattern {
@@ -91,15 +105,29 @@ export interface MixChannel {
   volume: number;
 }
 
-export interface ProjectV1 {
-  schemaVersion: typeof SCHEMA_VERSION;
+interface ProjectBase {
   tempo: number;
   key: RootNote;
   scale: Scale;
   swing: number;
   masterVolume: number;
   mix: MixChannel[];
+}
+
+export interface ProjectV2 extends ProjectBase {
+  schemaVersion: typeof SCHEMA_VERSION;
+  soundPresets: SoundPresetMap;
   scenes: Scene[];
+}
+
+export interface StepV1 extends Omit<Step, "drumVoices"> {}
+export interface BarPatternV1 { steps: StepV1[]; }
+export interface TrackPatternV1 extends Omit<TrackPattern, "bars"> { bars: BarPatternV1[]; }
+export interface SceneV1 extends Omit<Scene, "tracks"> { tracks: TrackPatternV1[]; }
+
+export interface ProjectV1 extends ProjectBase {
+  schemaVersion: typeof LEGACY_SCHEMA_VERSION;
+  scenes: SceneV1[];
 }
 
 export interface SelectedStep {
@@ -122,11 +150,12 @@ export interface TransportState {
   bar: number;
   step: number;
   peak: number;
+  trackPeaks: Record<TrackKind, number>;
   message: string;
 }
 
 export interface AppState {
-  project: ProjectV1;
+  project: ProjectV2;
   ui: AppUiState;
   transport: TransportState;
   canUndo: boolean;

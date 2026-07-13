@@ -47,4 +47,42 @@ describe("zentraler Store", () => {
     store.dispatch({ type: "step/dynamics", value: "ghost" });
     expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.dynamics).not.toBe("ghost");
   });
+
+  it("macht projektweite Presetwechsel rückgängig und wiederholt sie", () => {
+    const store = new GrooveboxStore(createFactoryProject());
+    store.dispatch({ type: "project/preset", track: "lead", value: "laser" });
+    expect(store.getState().project.soundPresets.lead).toBe("laser");
+    store.dispatch({ type: "ui/select-scene", scene: 3 });
+    expect(store.getState().project.soundPresets.lead).toBe("laser");
+    store.dispatch({ type: "history/undo" });
+    expect(store.getState().project.soundPresets.lead).toBe("clear");
+    store.dispatch({ type: "history/redo" });
+    expect(store.getState().project.soundPresets.lead).toBe("laser");
+  });
+
+  it("erzwingt Drum-Konflikte, Zwei-Rollen-Limit und eine letzte aktive Rolle", () => {
+    const store = new GrooveboxStore(createFactoryProject());
+    store.dispatch({ type: "ui/select-step", bar: 0, step: 0 });
+    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.drumVoices).toEqual(["kick", "closedHat"]);
+    store.dispatch({ type: "step/drum-voice", voice: "closedHat" });
+    store.dispatch({ type: "step/drum-voice", voice: "tom" });
+    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.drumVoices).toEqual(["kick"]);
+    store.dispatch({ type: "step/drum-voice", voice: "clap" });
+    store.dispatch({ type: "step/drum-voice", voice: "snare" });
+    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.drumVoices).toEqual(["kick", "clap"]);
+    store.dispatch({ type: "step/drum-voice", voice: "kick" });
+    store.dispatch({ type: "step/drum-voice", voice: "clap" });
+    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.drumVoices).toEqual(["clap"]);
+  });
+
+  it("nimmt Drumrollen-Änderungen vollständig in Undo und Redo auf", () => {
+    const store = new GrooveboxStore(createFactoryProject());
+    store.dispatch({ type: "ui/select-step", bar: 0, step: 0 });
+    store.dispatch({ type: "step/drum-voice", voice: "closedHat" });
+    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.drumVoices).toEqual(["kick"]);
+    store.dispatch({ type: "history/undo" });
+    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.drumVoices).toEqual(["kick", "closedHat"]);
+    store.dispatch({ type: "history/redo" });
+    expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.drumVoices).toEqual(["kick"]);
+  });
 });

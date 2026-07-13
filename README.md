@@ -2,7 +2,8 @@
 
 Eine vollständig clientseitige Synthwave-Groovebox für musikalische
 Einsteiger. Vier Szenen, fünf Instrumente und ein 4×16-Step-Sequencer laufen
-direkt im Browser. Alle Klänge werden lokal mit Tone.js synthetisiert.
+direkt im Browser. Drei kuratierte Klangfarben je Instrument sowie Kick,
+Snare, Clap, Closed/Open Hat und Tom werden lokal mit Tone.js synthetisiert.
 
 **Live:** https://theanonymous.github.io/Groovebox/
 
@@ -18,8 +19,9 @@ npm run test:e2e
 
 Die App benötigt keine Konten, kein Backend und lädt zur Laufzeit keine
 Ressourcen von fremden Origins. Projekte werden nur in `localStorage` des
-aktuellen Browserprofils gespeichert. Unterstützt wird eine Desktop-Fläche ab
-1024×720 Pixeln.
+aktuellen Browserprofils gespeichert. V1-Projekte werden automatisch nach V2
+migriert; die V1-Daten bleiben dabei als Rückfalloption unangetastet.
+Unterstützt wird eine Desktop-Fläche ab 1024×720 Pixeln.
 
 ## Bedienung
 

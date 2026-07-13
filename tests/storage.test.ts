@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { createFactoryProject } from "../src/domain/defaults";
-import { BACKUP_KEY, LocalProjectRepository, PROJECT_KEY } from "../src/storage";
+import { sanitizeProject } from "../src/domain/sanitize";
+import {
+  BACKUP_KEY,
+  LEGACY_BACKUP_KEY,
+  LEGACY_PROJECT_KEY,
+  LocalProjectRepository,
+  PROJECT_KEY,
+} from "../src/storage";
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>();
@@ -44,5 +51,44 @@ describe("versionierter lokaler Projektspeicher", () => {
     const result = new LocalProjectRepository(storage).load();
     expect(result.source).toBe("factory");
     expect(result.warning).toBeTruthy();
+  });
+
+  it("migriert V1, übersetzt Drum-Variation und lässt beide V1-Schlüssel unangetastet", () => {
+    const storage = new MemoryStorage();
+    const legacy = structuredClone(createFactoryProject()) as unknown as Record<string, unknown>;
+    legacy.schemaVersion = 1;
+    delete legacy.soundPresets;
+    (legacy.mix as Array<{ instrument: string; volume: number }>).find((mix) => mix.instrument === "lead")!.volume = 0.61;
+    const scenes = legacy.scenes as Array<{ tracks: Array<{ instrument: string; bars: Array<{ steps: Array<Record<string, unknown>> }> }> }>;
+    (legacy.scenes as Array<{ name: string }>)[2]!.name = "Eigener Höhepunkt";
+    const drumSteps = scenes[0]!.tracks.find((track) => track.instrument === "drums")!.bars[0]!.steps;
+    for (const step of drumSteps) delete step.drumVoices;
+    drumSteps[0]!.variation = 0;
+    drumSteps[4]!.variation = 0.5;
+    drumSteps[8]!.variation = 0.9;
+    const raw = JSON.stringify(legacy);
+    storage.setItem(LEGACY_PROJECT_KEY, raw);
+    storage.setItem(LEGACY_BACKUP_KEY, raw);
+
+    const result = new LocalProjectRepository(storage).load();
+    expect(result.source).toBe("migration");
+    expect(result.project.schemaVersion).toBe(2);
+    const migrated = result.project.scenes[0]!.tracks.find((track) => track.instrument === "drums")!.bars[0]!.steps;
+    expect(migrated[0]!.drumVoices).toEqual(["kick"]);
+    expect(migrated[4]!.drumVoices).toEqual(["snare"]);
+    expect(migrated[8]!.drumVoices).toEqual(["closedHat"]);
+    expect(migrated[8]!.variation).toBe(0);
+    expect(result.project.tempo).toBe(96);
+    expect(result.project.mix.find((mix) => mix.instrument === "lead")!.volume).toBe(0.61);
+    expect(result.project.scenes[2]!.name).toBe("Eigener Höhepunkt");
+    expect(storage.getItem(LEGACY_PROJECT_KEY)).toBe(raw);
+    expect(storage.getItem(LEGACY_BACKUP_KEY)).toBe(raw);
+    expect(JSON.parse(storage.getItem(PROJECT_KEY)!).schemaVersion).toBe(2);
+  });
+
+  it("saniert ungültige V2-Presets auf die instrumenteigene Werkseinstellung", () => {
+    const damaged = structuredClone(createFactoryProject()) as unknown as Record<string, unknown>;
+    (damaged.soundPresets as Record<string, unknown>).bass = "cosmos";
+    expect(sanitizeProject(damaged).soundPresets.bass).toBe("round");
   });
 });

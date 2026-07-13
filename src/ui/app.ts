@@ -1,18 +1,21 @@
 import type { AudioEngine } from "../audio/engine";
 import { chordLabel, currentRole, DEGREE_LABELS, KEY_LABELS, roleOptions, SCALE_LABELS } from "../domain/music";
+import { SOUND_PRESET_DEFINITIONS } from "../domain/sound-presets";
 import { createFactoryProject } from "../domain/defaults";
 import type {
   Action,
 } from "../store/store";
-import { GrooveboxStore, selectedPattern, selectedStep } from "../store/store";
+import { canAddDrumVoice, GrooveboxStore, selectedPattern, selectedStep } from "../store/store";
 import type {
   AppState,
   ChordColor,
+  DrumVoice,
   GrooveIntent,
   MacroKind,
   PhraseContour,
   StepDynamics,
   StepLength,
+  SoundPresetId,
   TrackKind,
   VariationAmount,
 } from "../domain/types";
@@ -20,6 +23,7 @@ import {
   CHORD_COLORS,
   CONTOURS,
   DYNAMICS,
+  DRUM_VOICES,
   INTENTS,
   MACRO_KINDS,
   ROOT_NOTES,
@@ -34,7 +38,7 @@ import type { BramsAdapter } from "./brams";
 const ICON_SPRITE = `${import.meta.env.BASE_URL}vendor/braun-ui/icons.svg`;
 
 const TRACK_LABELS: Record<TrackKind, { name: string; short: string; description: string }> = {
-  drums: { name: "Drums", short: "DR", description: "Kick, Snare und Hi-Hat geben Halt." },
+  drums: { name: "Drums", short: "DR", description: "Sechs Drumcomputer-Stimmen geben Halt und kontrollierte Fills." },
   bass: { name: "Bass", short: "BS", description: "Tiefe Töne tragen den Akkordwechsel." },
   chords: { name: "Chords", short: "CH", description: "Akkorde schaffen Farbe und Bewegung." },
   lead: { name: "Lead / Arp", short: "LD", description: "Eine helle Linie folgt sicheren Tönen." },
@@ -73,11 +77,18 @@ const VARIATION_LABELS: Record<VariationAmount, string> = {
   lively: "Lebendig",
   bold: "Mutig",
 };
+const DRUM_VOICE_LABELS: Record<DrumVoice, { label: string; hint: string }> = {
+  kick: { label: "Kick", hint: "Tiefe, geschichtete Bassdrum aus Pitch- und Sub-Anteil." },
+  snare: { label: "Snare", hint: "Rauschen und gestimmter Körper; darf mit Clap geschichtet werden." },
+  clap: { label: "Clap", hint: "Mehrteiliger Handclap-Transient; darf mit Snare geschichtet werden." },
+  closedHat: { label: "Closed Hat", hint: "Kurze geschlossene Hi-Hat; nicht gleichzeitig mit Open Hat." },
+  openHat: { label: "Open Hat", hint: "Länger ausklingende Hi-Hat; nicht gleichzeitig mit Closed Hat." },
+  tom: { label: "Tom", hint: "Gestimmte Tom für Fills; nicht gleichzeitig mit Kick." },
+};
 
 export class GrooveboxApp {
   private autosaveTimer: number | null = null;
   private editingChordBar = 0;
-  private lastPeak = 0;
 
   constructor(
     private readonly root: HTMLElement,
@@ -102,11 +113,11 @@ export class GrooveboxApp {
           status,
           message,
           ...(status === "idle" ? { peak: 0, bar: 0, step: 0, queuedScene: null } : {}),
+          ...(status === "idle" ? { trackPeaks: Object.fromEntries(TRACK_KINDS.map((track) => [track, 0])) as AppState["transport"]["trackPeaks"] } : {}),
         },
       });
     });
     this.audio.onPlayhead((position) => {
-      this.lastPeak = position.peak;
       this.store.dispatch({
         type: "transport/update",
         update: {
@@ -115,6 +126,7 @@ export class GrooveboxApp {
           bar: position.bar,
           step: position.step,
           peak: position.peak,
+          trackPeaks: position.trackPeaks,
         },
       });
     });
@@ -190,7 +202,7 @@ export class GrooveboxApp {
               ${this.soundInspector(state)}
             </aside>
           </div>
-          <p class="gb-local-note"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#info"></use></svg> Dein Projekt wird ausschließlich in diesem Browserprofil gespeichert. Es gibt in Version 1 keinen Datei- oder Audioexport.</p>
+          <p class="gb-local-note"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#info"></use></svg> Dein Projekt wird ausschließlich in diesem Browserprofil gespeichert. Es gibt in Version 2 keinen Datei- oder Audioexport.</p>
         </main>
         ${this.dialogs(state)}
       </div>
@@ -262,12 +274,12 @@ export class GrooveboxApp {
         ${TRACK_KINDS.map((track, index) => {
           const mix = state.project.mix.find((entry) => entry.instrument === track)!;
           const selected = state.ui.selectedTrack === track;
-          const meter = mix.muted ? 0 : Math.max(0.04, Math.min(1, this.lastPeak * 1.8 + ((index * 13) % 17) / 100));
+          const meter = mix.muted ? 0 : Math.max(0, Math.min(1, state.transport.trackPeaks[track]));
           return `<article class="gb-channel ${selected ? "is-selected" : ""}">
             <button class="gb-channel__select" type="button" data-action="select-track" data-track="${track}" data-focus-key="track-${track}" aria-pressed="${selected}" title="Spur ${index + 1} auswählen (Taste ${index + 1})">
               <span>${TRACK_LABELS[track].short}</span><strong>${TRACK_LABELS[track].name}</strong>
             </button>
-            <div class="gb-channel__meter" role="meter" aria-label="Pegel ${TRACK_LABELS[track].name}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(meter * 100)}"><i style="--level:${meter}"></i></div>
+            <div class="gb-channel__meter" data-meter-track="${track}" data-track-peak="${meter}" role="meter" aria-label="Pegel ${TRACK_LABELS[track].name}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(meter * 100)}"><i style="--level:${meter}"></i></div>
             <div class="gb-channel__buttons">
               <button type="button" data-action="mute" data-track="${track}" aria-pressed="${mix.muted}" title="${mix.muted ? "Stummschaltung aufheben" : "Spur stummschalten"}">M</button>
               <button type="button" data-action="solo" data-track="${track}" aria-pressed="${mix.solo}" title="${mix.solo ? "Solo aufheben" : "Nur diese Solo-Spuren hören"}">S</button>
@@ -303,20 +315,39 @@ export class GrooveboxApp {
       return `<section class="bu-card gb-detail-card"><div class="gb-panel-heading"><p class="gb-eyebrow">STEP</p><h2>Details</h2></div><div class="gb-empty-detail"><span>01—64</span><p>Wähle einen Step, um Lautstärke, Länge und eine sichere Tonrolle einzustellen.</p></div></section>`;
     }
     const track = state.ui.selectedTrack;
-    const role = currentRole(track, step);
+    const role = track === "drums" ? null : currentRole(track, step);
     return `<section class="bu-card gb-detail-card"><div class="gb-panel-heading"><p class="gb-eyebrow">TAKT ${position.bar + 1} · STEP ${position.step + 1}</p><h2>Step-Details</h2></div>
       <div class="gb-detail-fields ${step.enabled ? "" : "is-disabled"}">
         ${!step.enabled ? "<p class=\"gb-inline-note\">Dieser Step ist aus. Klicke ihn im Raster einmal an, um Details zu bearbeiten.</p>" : ""}
         <label class="bu-field"><span class="bu-field__label">Dynamik</span><select class="bu-select" data-change="step-dynamics" ${step.enabled ? "" : "disabled"}>${DYNAMICS.map((dynamic) => option(dynamic, DYNAMIC_LABELS[dynamic], step.dynamics)).join("")}</select><span class="bu-field__help">Wie deutlich dieser Schritt hörbar ist.</span></label>
         <label class="bu-field"><span class="bu-field__label">Länge</span><select class="bu-select" data-change="step-length" ${step.enabled ? "" : "disabled"}>${STEP_LENGTHS.map((length) => option(length, LENGTH_LABELS[length], step.length)).join("")}</select><span class="bu-field__help">Kurze Töne federn, lange Töne verbinden.</span></label>
-        <label class="bu-field"><span class="bu-field__label">Tonrolle</span><select class="bu-select" data-change="step-role" ${step.enabled ? "" : "disabled"}>${roleOptions(track).map((entry) => option(entry.value, entry.label, role.value)).join("")}</select><span class="bu-field__help">Nur passende Schlag- oder Skalentöne sind möglich.</span></label>
+        ${track === "drums" ? this.drumVoiceControls(step) : `<label class="bu-field"><span class="bu-field__label">Tonrolle</span><select class="bu-select" data-change="step-role" ${step.enabled ? "" : "disabled"}>${roleOptions(track).map((entry) => option(entry.value, entry.label, role!.value)).join("")}</select><span class="bu-field__help">Nur passende Skalentöne sind möglich.</span></label>`}
       </div></section>`;
+  }
+
+  private drumVoiceControls(step: NonNullable<ReturnType<typeof selectedStep>>): string {
+    return `<fieldset class="gb-drum-voices" ${step.enabled ? "" : "disabled"}>
+      <legend>Drumrollen <span>${step.drumVoices.length}/2</span></legend>
+      <div class="gb-drum-voice-grid">
+        ${DRUM_VOICES.map((voice) => {
+          const active = step.drumVoices.includes(voice);
+          const disabled = !step.enabled || (active ? step.drumVoices.length === 1 : !canAddDrumVoice(step.drumVoices, voice));
+          return `<button type="button" data-action="drum-voice" data-voice="${voice}" data-focus-key="drum-voice-${voice}" aria-pressed="${active}" ${disabled ? "disabled" : ""} title="${DRUM_VOICE_LABELS[voice].hint}">${DRUM_VOICE_LABELS[voice].label}</button>`;
+        }).join("")}
+      </div>
+      <span class="bu-field__help">Höchstens zwei Rollen. Die letzte Rolle bleibt erhalten, solange der Step aktiv ist.</span>
+    </fieldset>`;
   }
 
   private soundInspector(state: AppState): string {
     const pattern = selectedPattern(state)!;
+    const track = state.ui.selectedTrack;
+    const preset = state.project.soundPresets[track];
     return `<section class="bu-card gb-sound-card"><div class="gb-panel-heading"><p class="gb-eyebrow">KLANG</p><h2>Charakter</h2></div>
       <div class="gb-sound-fields">
+        <fieldset class="gb-preset-field"><legend>Klangfarbe</legend><div class="bu-segmented gb-presets" role="group" aria-label="Klangfarbe ${TRACK_LABELS[track].name}">
+          ${SOUND_PRESET_DEFINITIONS[track].map((entry) => `<button class="bu-segmented__item" type="button" data-action="preset" data-preset="${entry.id}" aria-pressed="${preset === entry.id}" title="${entry.hint}">${entry.label}</button>`).join("")}
+        </div><span class="bu-field__help">Gilt für alle Szenen.</span></fieldset>
         <label class="bu-field"><span class="bu-field__label">Spielabsicht</span><select class="bu-select" data-change="intent">${INTENTS.map((intent) => option(intent, INTENT_LABELS[intent], pattern.intent)).join("")}</select></label>
         <label class="bu-field"><span class="bu-field__label">Melodieverlauf</span><select class="bu-select" data-change="contour">${CONTOURS.map((contour) => option(contour, CONTOUR_LABELS[contour], pattern.contour)).join("")}</select></label>
         <div class="gb-macros">
@@ -327,7 +358,7 @@ export class GrooveboxApp {
 
   private dialogs(state: AppState): string {
     const chord = state.project.scenes[state.ui.selectedScene]!.chords[this.editingChordBar]!;
-    return `<div id="new-project-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="new-project-title"><div class="bu-dialog__header"><div><h2 id="new-project-title" class="bu-dialog__title">Neues Projekt beginnen?</h2><p class="bu-dialog__description">Das aktuelle Projekt wird durch die vier Werksszenen ersetzt.</p></div><button class="bu-icon-button" type="button" data-bu-close aria-label="Dialog schließen"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#close"></use></svg></button></div><div class="bu-dialog__body"><p>Die letzte gültige Version bleibt bis zum nächsten Speichern als Sicherung erhalten. Ein Datei-Export ist in Version 1 nicht verfügbar.</p></div><div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Abbrechen</button><button class="bu-button bu-button--danger" type="button" data-action="confirm-new">Werkprojekt laden</button></div></section></div>
+    return `<div id="new-project-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="new-project-title"><div class="bu-dialog__header"><div><h2 id="new-project-title" class="bu-dialog__title">Neues Projekt beginnen?</h2><p class="bu-dialog__description">Das aktuelle Projekt wird durch die vier Werksszenen ersetzt.</p></div><button class="bu-icon-button" type="button" data-bu-close aria-label="Dialog schließen"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#close"></use></svg></button></div><div class="bu-dialog__body"><p>Die letzte gültige Version bleibt bis zum nächsten Speichern als Sicherung erhalten. Ein Datei-Export ist in Version 2 nicht verfügbar.</p></div><div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Abbrechen</button><button class="bu-button bu-button--danger" type="button" data-action="confirm-new">Werkprojekt laden</button></div></section></div>
       <div id="chord-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="chord-title"><div class="bu-dialog__header"><div><h2 id="chord-title" class="bu-dialog__title">Akkord · Takt ${this.editingChordBar + 1}</h2><p class="bu-dialog__description">Alle Varianten bleiben sicher in ${KEY_LABELS[state.project.key]} ${SCALE_LABELS[state.project.scale]}.</p></div><button class="bu-icon-button" type="button" data-bu-close aria-label="Dialog schließen"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#close"></use></svg></button></div><div class="bu-dialog__body gb-dialog-fields"><label class="bu-field"><span class="bu-field__label">Stufe</span><select class="bu-select" id="chord-degree">${DEGREE_LABELS.map((label, index) => option(String(index + 1), label, String(chord.degree))).join("")}</select></label><label class="bu-field"><span class="bu-field__label">Farbe</span><select class="bu-select" id="chord-color">${CHORD_COLORS.map((color) => option(color, COLOR_LABELS[color], chord.color)).join("")}</select></label><label class="bu-field"><span class="bu-field__label">Lage</span><select class="bu-select" id="chord-inversion">${[-1, 0, 1].map((value) => option(String(value), value === -1 ? "Tief" : value === 1 ? "Hoch" : "Mitte", String(chord.inversion))).join("")}</select></label></div><div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Abbrechen</button><button class="bu-button bu-button--primary" type="button" data-action="save-chord">Akkord übernehmen</button></div></section></div>
       <div class="bu-toast-region" data-bu-toast-region aria-live="polite" aria-atomic="false"></div>`;
   }
@@ -365,9 +396,13 @@ export class GrooveboxApp {
     if (state.transport.status === "playing" && state.transport.runningScene === state.ui.selectedScene) {
       this.root.querySelector(`.gb-step[data-bar="${state.transport.bar}"][data-step="${state.transport.step}"]`)?.classList.add("is-playing");
     }
-    this.root.querySelectorAll<HTMLElement>(".gb-channel__meter i").forEach((bar, index) => {
-      const wobble = ((index * 13) % 17) / 100;
-      bar.style.setProperty("--level", String(Math.max(0.03, Math.min(1, state.transport.peak * 1.8 + wobble))));
+    this.root.querySelectorAll<HTMLElement>(".gb-channel__meter").forEach((meter) => {
+      const track = meter.dataset.meterTrack as TrackKind;
+      const mix = state.project.mix.find((entry) => entry.instrument === track);
+      const level = mix?.muted ? 0 : Math.max(0, Math.min(1, state.transport.trackPeaks[track] ?? 0));
+      meter.dataset.trackPeak = String(level);
+      meter.setAttribute("aria-valuenow", String(Math.round(level * 100)));
+      meter.querySelector<HTMLElement>("i")?.style.setProperty("--level", String(level));
     });
     this.root.querySelectorAll(".gb-scene").forEach((element, index) => {
       element.classList.toggle("is-running", state.transport.status === "playing" && index === state.transport.runningScene);
@@ -408,6 +443,8 @@ export class GrooveboxApp {
     else if (action === "mute") this.store.dispatch({ type: "mix/mute", track: button.dataset.track as TrackKind });
     else if (action === "solo") this.store.dispatch({ type: "mix/solo", track: button.dataset.track as TrackKind });
     else if (action === "cycle-step") this.store.dispatch({ type: "step/cycle", bar: Number(button.dataset.bar), step: Number(button.dataset.step) });
+    else if (action === "drum-voice") this.store.dispatch({ type: "step/drum-voice", voice: button.dataset.voice as DrumVoice });
+    else if (action === "preset") this.store.dispatch({ type: "project/preset", track: this.store.getState().ui.selectedTrack, value: button.dataset.preset as SoundPresetId });
     else if (action === "toggle-lock") this.store.dispatch({ type: "ui/toggle-lock", bar: Number(button.dataset.bar) });
     else if (action === "variation-amount") this.store.dispatch({ type: "ui/variation-amount", amount: button.dataset.value as VariationAmount });
     else if (action === "vary") this.store.dispatch({ type: "track/vary" });

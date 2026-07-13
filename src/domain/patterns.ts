@@ -61,6 +61,7 @@ export function emptyStep(): Step {
     variation: 0,
     degreeOffset: 0,
     length: "normal",
+    drumVoices: [],
   };
 }
 
@@ -74,8 +75,7 @@ function setHit(bar: BarPattern, index: number, track: TrackKind, accent = false
   step.enabled = true;
   step.dynamics = accent ? "accent" : "normal";
   if (track === "drums") {
-    if (index === 4 || index === 12) step.variation = 0.5;
-    else if (index % 2 === 0 && index !== 0 && index !== 8) step.variation = 0.85;
+    step.drumVoices = defaultDrumVoices(index);
   }
 }
 
@@ -180,7 +180,17 @@ export function generateTypicalPattern(
       setHit(bar, 4, track);
       setHit(bar, 8, track, random() > 0.3);
       setHit(bar, 12, track);
-      if (barIndex === 3 && random() > 0.35) setHit(bar, 15, track);
+      if (barIndex === 3 && random() > 0.35) {
+        setHit(bar, 15, track);
+        bar.steps[15]!.drumVoices = random() > 0.48 ? ["tom"] : ["openHat"];
+        bar.steps[15]!.variation = 0.35 + random() * 0.55;
+      }
+      if (barIndex === 3 && random() > 0.62) {
+        setHit(bar, 14, track);
+        bar.steps[14]!.drumVoices = ["tom", "clap"];
+        bar.steps[14]!.dynamics = "ghost";
+        bar.steps[14]!.variation = 0.2 + random() * 0.45;
+      }
     } else {
       const first = bar.steps.find((step) => step.enabled);
       if (first) first.dynamics = "accent";
@@ -202,7 +212,8 @@ export function cycleStep(step: Step, track: TrackKind, stepIndex: number): Step
   if (!next.enabled) {
     next.enabled = true;
     next.dynamics = "normal";
-    next.variation = track === "drums" ? defaultDrumRole(stepIndex) : 0;
+    next.variation = 0;
+    next.drumVoices = track === "drums" ? defaultDrumVoices(stepIndex) : [];
   } else if (next.dynamics !== "accent" && next.variation < 0.95) {
     next.dynamics = "accent";
   } else if (next.dynamics === "accent") {
@@ -215,10 +226,10 @@ export function cycleStep(step: Step, track: TrackKind, stepIndex: number): Step
   return next;
 }
 
-function defaultDrumRole(stepIndex: number): number {
-  if (stepIndex === 4 || stepIndex === 12) return 0.5;
-  if (stepIndex % 2 === 0 && stepIndex !== 0 && stepIndex !== 8) return 0.85;
-  return 0;
+function defaultDrumVoices(stepIndex: number): Step["drumVoices"] {
+  if (stepIndex === 4 || stepIndex === 12) return ["snare", "clap"];
+  if (stepIndex === 0 || stepIndex === 8) return ["kick", "closedHat"];
+  return ["closedHat"];
 }
 
 export function isAnchor(track: TrackKind, stepIndex: number, step: Step): boolean {
@@ -238,6 +249,11 @@ function varyExpression(pattern: TrackPattern, random: Random, locks: readonly b
   );
   if (!candidates.length) return false;
   const candidate = choose(candidates, random);
+  if (pattern.instrument === "drums") {
+    candidate.step.variation = Math.round(random() * 1000) / 1000;
+    candidate.step.length = candidate.step.variation > 0.68 ? "long" : candidate.step.variation < 0.28 ? "short" : "normal";
+    return true;
+  }
   if (candidate.anchor || random() > 0.5) {
     candidate.step.length = candidate.step.length === "normal" ? "short" : "normal";
   } else {
@@ -254,6 +270,20 @@ export function varyPattern(
   const before = JSON.stringify(pattern.bars);
   const random = xorshift(hash(`${before}:${amount}`));
   if (amount === "subtle") return varyExpression(pattern, random, locks);
+
+  if (pattern.instrument === "drums") {
+    const candidates = pattern.bars.flatMap((bar, barIndex) =>
+      locks[barIndex] ? [] : bar.steps.filter((step) => step.enabled),
+    );
+    const count = Math.min(amount === "bold" ? 4 : 2, candidates.length);
+    for (let index = 0; index < count; index += 1) {
+      const step = candidates.splice(Math.floor(random() * candidates.length), 1)[0];
+      if (!step) break;
+      step.variation = Math.round(random() * 1000) / 1000;
+      step.length = step.variation > 0.68 ? "long" : step.variation < 0.28 ? "short" : "normal";
+    }
+    return JSON.stringify(pattern.bars) !== before;
+  }
 
   const available = pattern.bars.map((_, index) => index).filter((index) => !locks[index]);
   const count = Math.min(amount === "bold" ? 2 : 1, available.length);

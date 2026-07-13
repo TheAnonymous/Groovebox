@@ -1,6 +1,14 @@
 import * as Tone from "tone";
 import { chordNotes, scaleDegreeMidi } from "../domain/music";
-import type { ProjectV1, Step, TrackKind, TrackMacros } from "../domain/types";
+import { presetDefinition, safeEffectParameters } from "../domain/sound-presets";
+import type {
+  DrumVoice,
+  ProjectV2,
+  SoundPresetId,
+  Step,
+  TrackKind,
+  TrackMacros,
+} from "../domain/types";
 import { TRACK_KINDS } from "../domain/types";
 import { effectiveTrackGains } from "../store/store";
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
@@ -12,59 +20,79 @@ export interface AudioStatusEvent {
   message: string;
 }
 
+export interface PlayheadEvent extends SequencerPosition {
+  peak: number;
+  trackPeaks: Record<TrackKind, number>;
+}
+
 export interface AudioEngine {
   initialize(): Promise<void>;
   start(scene: number): Promise<void>;
   stop(): void;
   panic(): void;
   queueScene(scene: number): number | null;
-  syncProject(project: ProjectV1): void;
-  onPlayhead(listener: (position: SequencerPosition & { peak: number }) => void): () => void;
+  syncProject(project: ProjectV2): void;
+  onPlayhead(listener: (position: PlayheadEvent) => void): () => void;
   onStatus(listener: (status: AudioStatusEvent) => void): () => void;
   dispose(): void;
 }
 
 interface TrackStrip {
-  gain: Tone.Gain;
   filter: Tone.Filter;
-  distortion: Tone.Distortion;
+  drive: Tone.Compressor;
+  chorus: Tone.Chorus;
   delay: Tone.FeedbackDelay;
   reverb: Tone.Reverb;
+  gain: Tone.Gain;
   meter: Tone.Meter;
 }
 
-interface Instruments {
-  kick: Tone.MembraneSynth;
-  snare: Tone.NoiseSynth;
-  hat: Tone.MetalSynth;
-  bass: Tone.MonoSynth;
-  chords: Tone.Synth[];
-  lead: Tone.MonoSynth;
-  pad: Tone.Synth[];
+interface VoiceBank {
+  readonly track: TrackKind;
+  readonly preset: SoundPresetId;
+  trigger(notes: number[], step: Step, time: number, velocity: number): void;
+  release(time?: number): void;
+  dispose(): void;
 }
 
+type MelodicVoice = Tone.Synth | Tone.MonoSynth;
+
+export const MAX_VOICE_BANKS = 15;
+export const VOICE_LIMITS: Record<TrackKind, number> = {
+  drums: 6,
+  bass: 1,
+  chords: 4,
+  lead: 1,
+  pad: 4,
+};
+
 export class ToneAudioEngine implements AudioEngine {
-  private project: ProjectV1;
+  private project: ProjectV2;
   private initialized = false;
+  private graphReady: Promise<void> | null = null;
   private strips: Record<TrackKind, TrackStrip> | null = null;
-  private instruments: Instruments | null = null;
+  private readonly voiceBanks = new Map<string, VoiceBank>();
   private masterNodes: Tone.ToneAudioNode[] = [];
   private masterMeter: Tone.Meter | null = null;
   private scheduleId: number | null = null;
   private meterFrame: number | null = null;
   private measuredPeak = 0;
+  private measuredTrackPeaks = zeroTrackPeaks();
   private readonly clock = new BarQueuedTransport();
-  private readonly playheadListeners = new Set<(position: SequencerPosition & { peak: number }) => void>();
+  private readonly playheadListeners = new Set<(position: PlayheadEvent) => void>();
   private readonly statusListeners = new Set<(status: AudioStatusEvent) => void>();
 
-  constructor(project: ProjectV1) {
+  constructor(project: ProjectV2) {
     this.project = structuredClone(project);
   }
 
   async initialize(): Promise<void> {
     this.emitStatus("starting", "Audio wird vorbereitet …");
     await Tone.start();
-    if (!this.initialized) this.createGraph();
+    if (!this.initialized) {
+      this.graphReady ??= this.createGraph().finally(() => { this.graphReady = null; });
+      await this.graphReady;
+    }
     if (Tone.getContext().state !== "running") {
       this.emitStatus("suspended", "Audio ist pausiert – Start erneut anklicken");
       return;
@@ -97,7 +125,7 @@ export class ToneAudioEngine implements AudioEngine {
     this.scheduleId = null;
     this.clock.reset();
     this.releaseAll();
-    this.measuredPeak = 0;
+    this.resetMeters();
     this.emitStatus("idle", "Gestoppt");
   }
 
@@ -106,21 +134,21 @@ export class ToneAudioEngine implements AudioEngine {
     Tone.getTransport().cancel();
     this.scheduleId = null;
     this.clock.reset();
-    this.releaseAll();
-    this.measuredPeak = 0;
-    this.emitStatus("idle", "Panik – alle Stimmen gestoppt");
+    this.destroyGraph();
+    this.resetMeters();
+    this.emitStatus("idle", "Panik – alle Stimmen und Effekte gestoppt");
   }
 
   queueScene(scene: number): number | null {
     return this.clock.queue(scene);
   }
 
-  syncProject(project: ProjectV1): void {
+  syncProject(project: ProjectV2): void {
     this.project = structuredClone(project);
     if (this.initialized) this.applyProject();
   }
 
-  onPlayhead(listener: (position: SequencerPosition & { peak: number }) => void): () => void {
+  onPlayhead(listener: (position: PlayheadEvent) => void): () => void {
     this.playheadListeners.add(listener);
     return () => this.playheadListeners.delete(listener);
   }
@@ -131,22 +159,16 @@ export class ToneAudioEngine implements AudioEngine {
   }
 
   dispose(): void {
-    this.panic();
-    Object.values(this.strips ?? {}).forEach((strip) => Object.values(strip).forEach((node) => node.dispose()));
-    Object.values(this.instruments ?? {}).forEach((instrument) => {
-      if (Array.isArray(instrument)) instrument.forEach((voice) => voice.dispose());
-      else instrument.dispose();
-    });
-    this.masterNodes.forEach((node) => node.dispose());
-    if (this.meterFrame !== null) cancelAnimationFrame(this.meterFrame);
-    this.meterFrame = null;
-    this.strips = null;
-    this.instruments = null;
-    this.masterNodes = [];
-    this.initialized = false;
+    Tone.getTransport().stop();
+    Tone.getTransport().cancel();
+    this.scheduleId = null;
+    this.clock.reset();
+    this.destroyGraph();
+    this.playheadListeners.clear();
+    this.statusListeners.clear();
   }
 
-  private createGraph(): void {
+  private async createGraph(): Promise<void> {
     const highpass = new Tone.Filter({ type: "highpass", frequency: 28, rolloff: -24 });
     const compressor = new Tone.Compressor({ threshold: -18, ratio: 3, attack: 0.012, release: 0.22 });
     const limiter = new Tone.Limiter(-1.2);
@@ -157,74 +179,38 @@ export class ToneAudioEngine implements AudioEngine {
 
     const strips = {} as Record<TrackKind, TrackStrip>;
     for (const track of TRACK_KINDS) {
-      const filter = new Tone.Filter({ type: "lowpass", frequency: 8000, rolloff: -12 });
-      const distortion = new Tone.Distortion({ distortion: 0.08, oversample: "2x", wet: 0.18 });
+      const filter = new Tone.Filter({ type: "lowpass", frequency: 8_000, rolloff: -12 });
+      const drive = new Tone.Compressor({ threshold: -10, ratio: 1.5, attack: 0.004, release: 0.12 });
+      const chorus = new Tone.Chorus({ frequency: track === "pad" ? 0.32 : 0.7, delayTime: 3.2, depth: 0.45, wet: 0.08 }).start();
       const delay = new Tone.FeedbackDelay({ delayTime: "8n", feedback: 0.18, wet: 0.1 });
       const reverb = new Tone.Reverb({ decay: track === "pad" ? 3.4 : 1.7, preDelay: 0.02, wet: 0.12 });
       const gain = new Tone.Gain(0.8);
       const trackMeter = new Tone.Meter({ normalRange: true, smoothing: 0.8 });
-      filter.chain(distortion, delay, reverb, gain, highpass);
-      trackMeter.connect(filter);
-      strips[track] = { filter, distortion, delay, reverb, gain, meter: trackMeter };
+      filter.chain(drive, chorus, delay, reverb, gain, trackMeter, highpass);
+      strips[track] = { filter, drive, chorus, delay, reverb, gain, meter: trackMeter };
     }
     this.strips = strips;
-
-    const route = (instrument: Tone.ToneAudioNode, track: TrackKind) => instrument.connect(strips[track].meter);
-    const kick = new Tone.MembraneSynth({
-      pitchDecay: 0.045,
-      octaves: 7,
-      oscillator: { type: "sine" },
-      envelope: { attack: 0.001, decay: 0.28, sustain: 0.01, release: 0.12 },
-    });
-    const snare = new Tone.NoiseSynth({
-      noise: { type: "pink" },
-      envelope: { attack: 0.001, decay: 0.16, sustain: 0, release: 0.08 },
-    });
-    const hat = new Tone.MetalSynth({
-      harmonicity: 5.1,
-      modulationIndex: 26,
-      resonance: 3200,
-      octaves: 1.5,
-      envelope: { attack: 0.001, decay: 0.055, release: 0.025 },
-    });
-    hat.frequency.value = 220;
-    const bass = new Tone.MonoSynth({
-      oscillator: { type: "sawtooth" },
-      filter: { type: "lowpass", Q: 2, rolloff: -24 },
-      filterEnvelope: { attack: 0.005, decay: 0.18, sustain: 0.22, release: 0.16, baseFrequency: 90, octaves: 3.4 },
-      envelope: { attack: 0.005, decay: 0.12, sustain: 0.45, release: 0.12 },
-    });
-    const chords = Array.from(
-      { length: 4 },
-      () => new Tone.Synth({
-        oscillator: { type: "sawtooth" },
-        envelope: { attack: 0.012, decay: 0.2, sustain: 0.38, release: 0.45 },
-      }),
-    );
-    const lead = new Tone.MonoSynth({
-      oscillator: { type: "square" },
-      filter: { type: "lowpass", Q: 1.4, rolloff: -12 },
-      filterEnvelope: { attack: 0.005, decay: 0.12, sustain: 0.5, release: 0.16, baseFrequency: 350, octaves: 3 },
-      envelope: { attack: 0.008, decay: 0.1, sustain: 0.35, release: 0.16 },
-    });
-    const pad = Array.from(
-      { length: 4 },
-      () => new Tone.Synth({
-        oscillator: { type: "fatsawtooth", count: 2, spread: 18 },
-        envelope: { attack: 0.18, decay: 0.4, sustain: 0.48, release: 1.3 },
-      }),
-    );
-    route(kick, "drums");
-    route(snare, "drums");
-    route(hat, "drums");
-    route(bass, "bass");
-    chords.forEach((voice) => route(voice, "chords"));
-    route(lead, "lead");
-    pad.forEach((voice) => route(voice, "pad"));
-    this.instruments = { kick, snare, hat, bass, chords, lead, pad };
+    await Promise.all(Object.values(strips).map((strip) => strip.reverb.ready));
+    if (this.strips !== strips) throw new Error("Audio-Vorbereitung wurde abgebrochen");
     this.initialized = true;
     this.monitorMeters();
     this.applyProject();
+  }
+
+  private destroyGraph(): void {
+    if (this.meterFrame !== null) cancelAnimationFrame(this.meterFrame);
+    this.meterFrame = null;
+    for (const bank of this.voiceBanks.values()) bank.dispose();
+    this.voiceBanks.clear();
+    Object.values(this.strips ?? {}).forEach((strip) => {
+      strip.chorus.stop();
+      Object.values(strip).forEach((node) => node.dispose());
+    });
+    this.masterNodes.forEach((node) => node.dispose());
+    this.strips = null;
+    this.masterNodes = [];
+    this.masterMeter = null;
+    this.initialized = false;
   }
 
   private applyProject(): void {
@@ -244,13 +230,15 @@ export class ToneAudioEngine implements AudioEngine {
   }
 
   private applyMacros(strip: TrackStrip, macros: TrackMacros, track: TrackKind): void {
-    const baseCutoff = track === "bass" ? 500 : track === "pad" ? 3200 : 7600;
-    strip.filter.frequency.rampTo(baseCutoff * (1.35 - macros.warmth * 0.72), 0.08);
-    strip.distortion.distortion = 0.02 + macros.drive * (track === "drums" || track === "bass" ? 0.42 : 0.22);
-    strip.distortion.wet.rampTo(0.08 + macros.drive * 0.34, 0.08);
-    strip.delay.wet.rampTo(macros.space * 0.28, 0.08);
-    strip.delay.feedback.rampTo(0.1 + macros.motion * 0.26, 0.08);
-    strip.reverb.wet.rampTo(macros.space * (track === "pad" ? 0.52 : 0.34), 0.08);
+    const parameters = safeEffectParameters(track, this.project.soundPresets[track], macros);
+    strip.filter.frequency.rampTo(parameters.cutoff, 0.08);
+    strip.filter.Q.rampTo(parameters.filterQ, 0.08);
+    strip.drive.threshold.rampTo(parameters.driveThreshold, 0.08);
+    strip.drive.ratio.rampTo(parameters.driveRatio, 0.08);
+    strip.chorus.wet.rampTo(parameters.chorusWet, 0.08);
+    strip.delay.wet.rampTo(parameters.delayWet, 0.08);
+    strip.delay.feedback.rampTo(parameters.feedback, 0.08);
+    strip.reverb.wet.rampTo(parameters.reverbWet, 0.08);
   }
 
   private tick(time: number): void {
@@ -262,7 +250,8 @@ export class ToneAudioEngine implements AudioEngine {
     if (position.switched) this.applyProject();
     for (const track of TRACK_KINDS) this.triggerTrack(track, position, time);
     Tone.getDraw().schedule(() => {
-      for (const listener of this.playheadListeners) listener({ ...position, peak: this.measuredPeak });
+      const event = { ...position, peak: this.measuredPeak, trackPeaks: { ...this.measuredTrackPeaks } };
+      for (const listener of this.playheadListeners) listener(event);
     }, time);
   }
 
@@ -270,50 +259,38 @@ export class ToneAudioEngine implements AudioEngine {
     const pattern = this.patternFor(position.scene, track);
     const step = pattern?.bars[position.bar]?.steps[position.step];
     const chord = this.project.scenes[position.scene]?.chords[position.bar];
-    if (!pattern || !step?.enabled || !chord || !this.instruments) return;
-    const gain = effectiveTrackGains(this.project)[track];
-    if (gain <= 0) return;
+    if (!pattern || !step?.enabled || !chord || effectiveTrackGains(this.project)[track] <= 0) return;
     const velocity = dynamicsVelocity(step) * (0.78 + pattern.macros.density * 0.2);
-    const duration = stepDuration(step);
+    const bank = this.bankFor(track);
 
     if (track === "drums") {
-      if (step.variation >= 0.72) this.instruments.hat.triggerAttackRelease("32n", time, velocity * 0.52);
-      else if (step.variation >= 0.3) this.instruments.snare.triggerAttackRelease("16n", time, velocity * 0.58);
-      else this.instruments.kick.triggerAttackRelease("C1", "16n", time, velocity * 0.88);
+      bank.trigger([], step, time, velocity);
       return;
     }
     if (track === "bass") {
-      const midi = scaleDegreeMidi(this.project.key, this.project.scale, chord.degree, step.degreeOffset, 2);
-      this.instruments.bass.triggerAttackRelease(toHz(midi), duration, time, velocity * 0.74);
-      return;
-    }
-    if (track === "chords") {
-      const notes = chordNotes(this.project.key, this.project.scale, chord, 3).slice(0, 4);
-      this.instruments.chords.forEach((voice, index) => {
-        voice.triggerRelease(time);
-        const note = notes[index];
-        if (note !== undefined) voice.triggerAttackRelease(toHz(note), duration, time, velocity * 0.32);
-      });
+      bank.trigger([scaleDegreeMidi(this.project.key, this.project.scale, chord.degree, step.degreeOffset, 2)], step, time, velocity);
       return;
     }
     if (track === "lead") {
-      const midi = scaleDegreeMidi(this.project.key, this.project.scale, chord.degree, step.degreeOffset, 4);
-      this.instruments.lead.triggerAttackRelease(toHz(midi), duration, time, velocity * 0.4);
+      bank.trigger([scaleDegreeMidi(this.project.key, this.project.scale, chord.degree, step.degreeOffset, 4)], step, time, velocity);
       return;
     }
-    const notes = chordNotes(this.project.key, this.project.scale, chord, 3).slice(0, 4);
-    this.instruments.pad.forEach((voice, index) => {
-      voice.triggerRelease(time);
-      const note = notes[index];
-      if (note !== undefined) {
-        voice.triggerAttackRelease(
-          toHz(note),
-          step.length === "short" ? "8n" : step.length === "long" ? "1m" : "2n",
-          time,
-          velocity * 0.2,
-        );
-      }
-    });
+    bank.trigger(chordNotes(this.project.key, this.project.scale, chord, 3).slice(0, 4), step, time, velocity);
+  }
+
+  private bankFor(track: TrackKind): VoiceBank {
+    const preset = this.project.soundPresets[track];
+    const key = `${track}:${preset}`;
+    const existing = this.voiceBanks.get(key);
+    if (existing) return existing;
+    if (this.voiceBanks.size >= MAX_VOICE_BANKS) throw new Error("Maximale Zahl der Klangbänke erreicht");
+    const strip = this.strips?.[track];
+    if (!strip) throw new Error("Audio-Signalweg ist nicht initialisiert");
+    const bank = track === "drums"
+      ? createDrumBank(preset, strip.filter)
+      : createMelodicBank(track, preset, strip.filter);
+    this.voiceBanks.set(key, bank);
+    return bank;
   }
 
   private patternFor(scene: number, track: TrackKind) {
@@ -321,35 +298,194 @@ export class ToneAudioEngine implements AudioEngine {
   }
 
   private releaseAll(): void {
-    this.instruments?.kick.triggerRelease();
-    this.instruments?.snare.triggerRelease();
-    this.instruments?.hat.triggerRelease();
-    this.instruments?.bass.triggerRelease();
-    this.instruments?.chords.forEach((voice) => voice.triggerRelease());
-    this.instruments?.lead.triggerRelease();
-    this.instruments?.pad.forEach((voice) => voice.triggerRelease());
+    for (const bank of this.voiceBanks.values()) bank.release();
   }
 
   private monitorMeters(): void {
     if (!this.initialized) return;
     const peakDb = this.masterMeter?.getValue();
     const masterPeak = typeof peakDb === "number" ? Math.pow(10, peakDb / 20) : 0;
-    const stripPeak = Math.max(
-      0,
-      ...Object.values(this.strips ?? {}).map((strip) => {
-        const value = strip.meter.getValue();
-        return typeof value === "number" ? value : 0;
-      }),
-    );
-    const current = Math.max(masterPeak, stripPeak * this.project.masterVolume);
-    this.measuredPeak = Math.max(current, this.measuredPeak * 0.88);
-    this.measuredPeak = Math.max(0, Math.min(1, this.measuredPeak));
+    this.measuredPeak = clamp01(Math.max(masterPeak, this.measuredPeak * 0.86));
+    for (const track of TRACK_KINDS) {
+      const value = this.strips?.[track].meter.getValue();
+      const peak = typeof value === "number" ? value : 0;
+      this.measuredTrackPeaks[track] = clamp01(Math.max(peak, this.measuredTrackPeaks[track] * 0.84));
+    }
     this.meterFrame = requestAnimationFrame(() => this.monitorMeters());
+  }
+
+  private resetMeters(): void {
+    this.measuredPeak = 0;
+    this.measuredTrackPeaks = zeroTrackPeaks();
   }
 
   private emitStatus(status: AudioStatus, message: string): void {
     for (const listener of this.statusListeners) listener({ status, message });
   }
+}
+
+export function drumLayerGain(voiceCount: number): number {
+  return 1 / Math.sqrt(Math.max(1, Math.min(2, Math.round(voiceCount))));
+}
+
+function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode): VoiceBank {
+  const definition = presetDefinition("drums", preset);
+  const output = new Tone.Gain(definition.level).connect(destination);
+  const kickPitch = new Tone.MembraneSynth({
+    pitchDecay: 0.035 + definition.decay * 0.05,
+    octaves: 6 + definition.brightness * 2,
+    oscillator: { type: definition.oscillator === "triangle" ? "triangle" : "sine" },
+    envelope: { attack: definition.attack, decay: definition.decay, sustain: 0.01, release: definition.release },
+  }).connect(output);
+  const kickSub = new Tone.MembraneSynth({
+    pitchDecay: 0.06,
+    octaves: 3.2,
+    oscillator: { type: "sine" },
+    envelope: { attack: 0.001, decay: definition.decay * 1.2, sustain: 0.015, release: definition.release },
+  }).connect(output);
+  const snareNoise = new Tone.NoiseSynth({
+    noise: { type: definition.brightness > 0.6 ? "white" : "pink" },
+    envelope: { attack: 0.001, decay: 0.11 + definition.decay * 0.32, sustain: 0, release: definition.release * 0.55 },
+  }).connect(output);
+  const snareBody = new Tone.Synth({
+    oscillator: { type: "triangle" },
+    envelope: { attack: 0.001, decay: 0.09 + definition.decay * 0.18, sustain: 0, release: 0.05 },
+  }).connect(output);
+  const clapParts = Array.from({ length: 3 }, () => new Tone.NoiseSynth({
+    noise: { type: "white" },
+    envelope: { attack: 0.001, decay: 0.045 + definition.decay * 0.08, sustain: 0, release: 0.035 },
+  }).connect(output));
+  const closedHat = makeHat(0.045 + definition.brightness * 0.025, definition).connect(output);
+  const openHat = makeHat(0.28 + definition.decay * 0.5, definition).connect(output);
+  const closedHatNoise = new Tone.NoiseSynth({
+    noise: { type: "white" },
+    envelope: { attack: 0.001, decay: 0.075, sustain: 0, release: 0.035 },
+  }).connect(output);
+  const openHatNoise = new Tone.NoiseSynth({
+    noise: { type: definition.brightness > 0.5 ? "white" : "pink" },
+    envelope: { attack: 0.001, decay: 0.32 + definition.decay * 0.3, sustain: 0, release: 0.12 },
+  }).connect(output);
+  const tom = new Tone.MembraneSynth({
+    pitchDecay: 0.025,
+    octaves: 2.6,
+    oscillator: { type: "triangle" },
+    envelope: { attack: 0.002, decay: 0.22 + definition.decay * 0.4, sustain: 0.02, release: 0.16 },
+  }).connect(output);
+  const nodes: Tone.ToneAudioNode[] = [kickPitch, kickSub, snareNoise, snareBody, ...clapParts, closedHat, openHat, closedHatNoise, openHatNoise, tom, output];
+
+  const triggerVoice = (voice: DrumVoice, step: Step, time: number, velocity: number) => {
+    const expression = clamp01(step.variation);
+    const length = step.length === "short" ? 0.72 : step.length === "long" ? 1.35 : 1;
+    if (voice === "kick") {
+      kickPitch.triggerAttackRelease(expression > 0.66 ? "D1" : "C1", (0.12 + expression * 0.12) * length, time, velocity * 0.78);
+      kickSub.triggerAttackRelease("C0", (0.18 + expression * 0.1) * length, time, velocity * 0.54);
+    } else if (voice === "snare") {
+      snareNoise.triggerAttackRelease((0.08 + expression * 0.16) * length, time, velocity * 0.62);
+      snareBody.triggerAttackRelease(expression > 0.55 ? "D3" : "C3", (0.06 + expression * 0.08) * length, time, velocity * 0.38);
+    } else if (voice === "clap") {
+      clapParts.forEach((part, index) => part.triggerAttackRelease((0.045 + expression * 0.08) * length, time + index * 0.012, velocity * (0.36 - index * 0.04)));
+    } else if (voice === "closedHat") {
+      openHat.triggerRelease(time);
+      openHatNoise.triggerRelease(time);
+      closedHat.triggerAttackRelease((0.07 + expression * 0.08) * length, time, velocity * 0.46);
+      closedHatNoise.triggerAttackRelease((0.06 + expression * 0.06) * length, time, velocity * 0.24);
+    } else if (voice === "openHat") {
+      openHat.triggerAttackRelease((0.18 + expression * 0.34) * length, time, velocity * 0.3);
+      openHatNoise.triggerAttackRelease((0.2 + expression * 0.32) * length, time, velocity * 0.2);
+    } else {
+      tom.triggerAttackRelease(expression > 0.66 ? "A1" : expression > 0.33 ? "G1" : "E1", (0.16 + expression * 0.22) * length, time, velocity * 0.58);
+    }
+  };
+
+  return {
+    track: "drums",
+    preset,
+    trigger: (_notes, step, time, velocity) => {
+      const gain = drumLayerGain(step.drumVoices.length);
+      step.drumVoices.forEach((voice) => triggerVoice(voice, step, time, velocity * gain));
+    },
+    release: (time) => {
+      kickPitch.triggerRelease(time);
+      kickSub.triggerRelease(time);
+      snareNoise.triggerRelease(time);
+      snareBody.triggerRelease(time);
+      clapParts.forEach((part) => part.triggerRelease(time));
+      closedHat.triggerRelease(time);
+      openHat.triggerRelease(time);
+      closedHatNoise.triggerRelease(time);
+      openHatNoise.triggerRelease(time);
+      tom.triggerRelease(time);
+    },
+    dispose: () => nodes.forEach((node) => node.dispose()),
+  };
+}
+
+function makeHat(decay: number, definition: ReturnType<typeof presetDefinition>): Tone.MetalSynth {
+  const hat = new Tone.MetalSynth({
+    harmonicity: 4.7 + definition.brightness,
+    modulationIndex: 22 + definition.brightness * 8,
+    resonance: 2_800 + definition.brightness * 1_800,
+    octaves: 1.2 + definition.brightness * 0.6,
+    envelope: { attack: 0.001, decay, release: decay * 0.45 },
+  });
+  hat.frequency.value = 210 + definition.brightness * 70;
+  return hat;
+}
+
+function createMelodicBank(track: Exclude<TrackKind, "drums">, preset: SoundPresetId, destination: Tone.ToneAudioNode): VoiceBank {
+  const definition = presetDefinition(track, preset);
+  const output = new Tone.Gain(definition.level).connect(destination);
+  const voices: MelodicVoice[] = Array.from({ length: VOICE_LIMITS[track] }, () => {
+    if (track === "bass" || track === "lead") {
+      return new Tone.MonoSynth({
+        oscillator: { type: definition.oscillator },
+        filter: { type: "lowpass", Q: track === "bass" ? 2.2 : 1.6, rolloff: track === "bass" ? -24 : -12 },
+        filterEnvelope: {
+          attack: definition.attack,
+          decay: definition.decay,
+          sustain: definition.sustain,
+          release: definition.release,
+          baseFrequency: track === "bass" ? 80 : 320,
+          octaves: 2.2 + definition.brightness * 1.8,
+        },
+        envelope: {
+          attack: definition.attack,
+          decay: definition.decay,
+          sustain: definition.sustain,
+          release: definition.release,
+        },
+      }).connect(output);
+    }
+    return new Tone.Synth({
+      oscillator: definition.oscillator === "fatsawtooth"
+        ? { type: "fatsawtooth", count: 2, spread: 14 + Math.abs(definition.detune) }
+        : { type: definition.oscillator },
+      envelope: {
+        attack: definition.attack,
+        decay: definition.decay,
+        sustain: definition.sustain,
+        release: definition.release,
+      },
+    }).connect(output);
+  });
+  const nodes: Tone.ToneAudioNode[] = [...voices, output];
+
+  return {
+    track,
+    preset,
+    trigger: (notes, step, time, velocity) => {
+      const duration = track === "pad"
+        ? step.length === "short" ? "8n" : step.length === "long" ? "1m" : "2n"
+        : stepDuration(step);
+      voices.forEach((voice, index) => {
+        const note = notes[index];
+        if (note === undefined) return;
+        voice.triggerAttackRelease(toHz(note), duration, time, velocity);
+      });
+    },
+    release: (time) => voices.forEach((voice) => voice.triggerRelease(time)),
+    dispose: () => nodes.forEach((node) => node.dispose()),
+  };
 }
 
 function dynamicsVelocity(step: Step): number {
@@ -370,4 +506,12 @@ function toHz(midi: number): number {
 
 function gainToDb(gain: number): number {
   return gain <= 0 ? -Infinity : 20 * Math.log10(gain);
+}
+
+function zeroTrackPeaks(): Record<TrackKind, number> {
+  return Object.fromEntries(TRACK_KINDS.map((track) => [track, 0])) as Record<TrackKind, number>;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }

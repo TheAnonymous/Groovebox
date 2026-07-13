@@ -41,6 +41,78 @@ test("bearbeitet Steps, Details und stellt Autosave nach Reload wieder her", asy
   await expect(page.locator('.gb-step[data-bar="0"][data-step="1"]')).toHaveClass(/gb-step--accent/);
 });
 
+test("speichert projektweite Klangfarben und bietet verständliche Tooltips", async ({ page }) => {
+  await page.locator('[data-action="select-track"][data-track="lead"]').click();
+  const laser = page.getByRole("button", { name: "Laser" });
+  await expect(laser).toHaveAttribute("title", /futuristischem Biss/);
+  await laser.click();
+  await expect(laser).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("Gilt für alle Szenen.")).toBeVisible();
+  await page.locator('.gb-scene[data-scene="3"]').click();
+  await expect(page.getByRole("button", { name: "Laser" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-save-status]")).toContainText("gespeichert", { timeout: 2_000 });
+
+  await page.reload();
+  await page.locator('[data-action="select-track"][data-track="lead"]').click();
+  await expect(page.getByRole("button", { name: "Laser" })).toHaveAttribute("aria-pressed", "true");
+});
+
+test("bedient sechs Drumrollen mit Konflikten, Layer-Limit und Fokus", async ({ page }) => {
+  await page.locator('.gb-step[data-bar="0"][data-step="0"]').click();
+  await expect(page.getByRole("heading", { name: "Step-Details" })).toBeVisible();
+  const kick = page.getByRole("button", { name: "Kick" });
+  const closed = page.getByRole("button", { name: "Closed Hat" });
+  const tom = page.getByRole("button", { name: "Tom" });
+  const clap = page.getByRole("button", { name: "Clap" });
+  await expect(kick).toHaveAttribute("aria-pressed", "true");
+  await expect(closed).toHaveAttribute("aria-pressed", "true");
+  await expect(clap).toBeDisabled();
+  await closed.click();
+  await expect(tom).toBeDisabled();
+  await expect(kick).toBeDisabled();
+  await clap.click();
+  await expect(clap).toBeFocused();
+  await expect(page.getByText("2/2")).toBeVisible();
+  await kick.click();
+  await expect(clap).toBeDisabled();
+  await expect(clap).toHaveAttribute("title", /Handclap-Transient/);
+});
+
+test("migriert einen gespeicherten V1-Stand im Browser ohne ihn zu überschreiben", async ({ page }) => {
+  await page.getByLabel("Tempo").evaluate((element: HTMLInputElement) => {
+    element.value = "107";
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await expect(page.locator("[data-save-status]")).toContainText("gespeichert", { timeout: 2_000 });
+  const legacyRaw = await page.evaluate(() => {
+    const project = JSON.parse(localStorage.getItem("groovebox.project.v2")!);
+    project.schemaVersion = 1;
+    delete project.soundPresets;
+    for (const scene of project.scenes) {
+      for (const track of scene.tracks) {
+        for (const bar of track.bars) {
+          for (const step of bar.steps) {
+            if (track.instrument === "drums") {
+              const voice = step.drumVoices?.[0];
+              step.variation = voice === "snare" || voice === "clap" ? 0.5 : voice === "closedHat" || voice === "openHat" ? 0.85 : 0;
+            }
+            delete step.drumVoices;
+          }
+        }
+      }
+    }
+    const raw = JSON.stringify(project);
+    localStorage.setItem("groovebox.project.v1", raw);
+    localStorage.removeItem("groovebox.project.v2");
+    return raw;
+  });
+  await page.reload();
+  await expect(page.getByLabel("Tempo")).toHaveValue("107");
+  await expect(page.locator(".bu-toast")).toContainText("Version 2", { timeout: 2_000 });
+  expect(await page.evaluate(() => localStorage.getItem("groovebox.project.v1"))).toBe(legacyRaw);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("groovebox.project.v2")!).schemaVersion)).toBe(2);
+});
+
 test("bedient Spuren, Szenen und Undo mit Tastatur", async ({ page }) => {
   await page.keyboard.press("5");
   await expect(page.getByRole("heading", { name: "Pad / FX" })).toBeVisible();
@@ -72,9 +144,10 @@ test("öffnet die Brams-Dialoge mit Fokusfalle und speichert einen sicheren Akko
 
 test("markiert eine laufende und die zuletzt vorgemerkte Szene", async ({ page, browserName }) => {
   test.skip(browserName !== "chromium", "Audio-Smoke wird einmal in Chromium ausgeführt");
+  test.setTimeout(45_000);
   await page.getByRole("button", { name: "Wiedergabe starten" }).click();
-  await expect(page.locator("[data-audio-status]")).toContainText("Wiedergabe läuft", { timeout: 5_000 });
-  await expect.poll(async () => Number(await page.locator("#app").getAttribute("data-audio-peak")), { timeout: 5_000 }).toBeGreaterThan(0);
+  await expect(page.locator("[data-audio-status]")).toContainText("Wiedergabe läuft", { timeout: 10_000 });
+  await expect.poll(async () => Number(await page.locator("#app").getAttribute("data-audio-peak")), { timeout: 10_000 }).toBeGreaterThan(0);
   expect(Number(await page.locator("#app").getAttribute("data-audio-peak"))).toBeLessThanOrEqual(1);
   await page.getByLabel("Tempo").evaluate((element: HTMLInputElement) => {
     element.value = "110";
@@ -89,10 +162,86 @@ test("markiert eine laufende und die zuletzt vorgemerkte Szene", async ({ page, 
   await page.locator('.gb-scene[data-scene="2"]').click();
   await expect(page.locator('.gb-scene[data-scene="2"]')).toHaveClass(/is-queued/);
   await expect(page.locator('.gb-scene[data-scene="1"]')).not.toHaveClass(/is-queued/);
-  await expect(page.locator(".gb-step.is-playing")).toHaveCount(1, { timeout: 5_000 });
+  await expect(page.locator(".gb-step.is-playing")).toHaveCount(1, { timeout: 10_000 });
   await page.getByRole("button", { name: "Panik" }).click();
   await expect(page.locator("[data-audio-status]")).toContainText("Panik");
   await expect(page.locator(".gb-step.is-playing")).toHaveCount(0);
+  await page.getByRole("button", { name: "Wiedergabe starten" }).click();
+  await expect(page.locator("[data-audio-status]")).toContainText("Wiedergabe läuft", { timeout: 10_000 });
+  await expect.poll(async () => Number(await page.locator("#app").getAttribute("data-audio-peak")), { timeout: 10_000 }).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Panik" }).click();
+});
+
+test("Chromium-Audiosmoke liefert für alle 15 Klangfarben echte, begrenzte Spurpegel", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "Echte Web-Audio-Pegel werden in Chromium geprüft");
+  test.setTimeout(90_000);
+  await page.locator('.gb-scene[data-scene="1"]').click();
+  const presets = {
+    drums: ["Neon 84", "Druck", "Nacht"],
+    bass: ["Rund", "Säge", "Puls"],
+    chords: ["Analog", "Glas", "Stab"],
+    lead: ["Klar", "Pluck", "Laser"],
+    pad: ["Samt", "Chor", "Kosmos"],
+  } as const;
+  let previous: keyof typeof presets | null = null;
+  for (const [track, labels] of Object.entries(presets) as Array<[keyof typeof presets, readonly string[]]>) {
+    await page.locator(`[data-action="select-track"][data-track="${track}"]`).click();
+    if (previous) await page.locator(`[data-action="solo"][data-track="${previous}"]`).click();
+    await page.locator(`[data-action="solo"][data-track="${track}"]`).click();
+    if (!previous) await page.getByRole("button", { name: "Wiedergabe starten" }).click();
+    for (const label of labels) {
+      await page.getByRole("button", { name: label, exact: true }).click();
+      await expect.poll(async () => Number(await page.locator(`[data-meter-track="${track}"]`).getAttribute("data-track-peak")), { timeout: 10_000 }).toBeGreaterThan(0);
+      await expect.poll(async () => Number(await page.locator("#app").getAttribute("data-audio-peak")), { timeout: 10_000 }).toBeGreaterThan(0);
+      const masterPeak = Number(await page.locator("#app").getAttribute("data-audio-peak"));
+      expect(masterPeak).toBeLessThanOrEqual(1);
+    }
+    previous = track;
+  }
+  await page.getByRole("button", { name: "Panik" }).click();
+});
+
+test("Chromium-Audiosmoke prüft sechs Drumrollen einzeln und Snare/Clap gelayert", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "Echte Web-Audio-Pegel werden in Chromium geprüft");
+  test.setTimeout(90_000);
+  await page.getByLabel("Tempo").evaluate((element: HTMLInputElement) => {
+    element.value = "97";
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await expect(page.locator("[data-save-status]")).toContainText("gespeichert", { timeout: 2_000 });
+  const variants = [["kick"], ["snare"], ["clap"], ["closedHat"], ["openHat"], ["tom"], ["snare", "clap"]];
+  for (const voices of variants) {
+    await page.evaluate((selectedVoices) => {
+      const project = JSON.parse(localStorage.getItem("groovebox.project.v2")!);
+      for (const mix of project.mix) {
+        mix.muted = mix.instrument !== "drums";
+        mix.solo = false;
+      }
+      for (const scene of project.scenes) {
+        const drums = scene.tracks.find((track: { instrument: string }) => track.instrument === "drums");
+        for (const bar of drums.bars) {
+          for (const step of bar.steps) {
+            step.enabled = true;
+            step.dynamics = "normal";
+            step.variation = 0.5;
+            step.drumVoices = selectedVoices;
+          }
+        }
+      }
+      localStorage.setItem("groovebox.project.v2", JSON.stringify(project));
+    }, voices);
+    await page.reload();
+    await page.getByRole("button", { name: "Wiedergabe starten" }).click();
+    await expect.poll(async () => Number(await page.locator('[data-meter-track="drums"]').getAttribute("data-track-peak")), {
+      message: `Drum-Signal für ${voices.join("+")}`,
+      timeout: 10_000,
+    }).toBeGreaterThan(0);
+    await expect.poll(async () => Number(await page.locator("#app").getAttribute("data-audio-peak")), { timeout: 10_000 }).toBeGreaterThan(0);
+    const peak = Number(await page.locator("#app").getAttribute("data-audio-peak"));
+    expect(peak).toBeGreaterThan(0);
+    expect(peak).toBeLessThanOrEqual(1);
+    await page.getByRole("button", { name: "Panik" }).click();
+  }
 });
 
 test("fängt beschädigte gespeicherte Daten verständlich ab", async ({ page }) => {

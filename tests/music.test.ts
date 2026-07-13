@@ -15,7 +15,7 @@ import {
   setPatternIntent,
   varyPattern,
 } from "../src/domain/patterns";
-import { isValidProject, sanitizeProject } from "../src/domain/sanitize";
+import { isValidProject, sanitizeDrumVoices, sanitizeProject } from "../src/domain/sanitize";
 import { ROOT_NOTES, SCALES, TRACK_KINDS } from "../src/domain/types";
 
 describe("musikalische Sicherheitsregeln", () => {
@@ -109,6 +109,38 @@ describe("typische Pattern und kontrollierte Variation", () => {
     expect(setPatternContour(pattern, "falling", [true, false, false, false])).toBe(true);
     expect(pattern.bars[0]).toEqual(locked);
     expect(pattern.bars.slice(1).flatMap((bar) => bar.steps).filter((step) => step.enabled).every((step) => step.length === "long")).toBe(true);
+  });
+
+  it("setzt feste Drumcomputer-Anker und kontrollierte Fill-Stimmen deterministisch", () => {
+    const first = generateTypicalPattern("drums", "balanced", "steady", 42);
+    const second = generateTypicalPattern("drums", "balanced", "steady", 42);
+    expect(first).toEqual(second);
+    for (const bar of first) {
+      expect(bar.steps[0]!.drumVoices).toEqual(["kick", "closedHat"]);
+      expect(bar.steps[4]!.drumVoices).toEqual(["snare", "clap"]);
+      expect(bar.steps[8]!.drumVoices).toEqual(["kick", "closedHat"]);
+      expect(bar.steps[12]!.drumVoices).toEqual(["snare", "clap"]);
+      expect(bar.steps[2]!.drumVoices).toEqual(["closedHat"]);
+    }
+    const fillVoices = first[3]!.steps.slice(14).flatMap((step) => step.drumVoices);
+    expect(fillVoices.every((voice) => ["tom", "clap", "openHat", "closedHat"].includes(voice))).toBe(true);
+  });
+
+  it("variiert Drum-Artikulation deterministisch, aber niemals die Rollen", () => {
+    const source = createFactoryProject().scenes[1]!.tracks.find((track) => track.instrument === "drums")!;
+    const first = structuredClone(source);
+    const second = structuredClone(source);
+    const roles = source.bars.map((bar) => bar.steps.map((step) => step.drumVoices));
+    expect(varyPattern(first, "bold", [false, false, false, false])).toBe(true);
+    expect(varyPattern(second, "bold", [false, false, false, false])).toBe(true);
+    expect(first).toEqual(second);
+    expect(first.bars.map((bar) => bar.steps.map((step) => step.drumVoices))).toEqual(roles);
+  });
+
+  it("saniert Rollen in Reihenfolge auf Konfliktfreiheit und höchstens zwei", () => {
+    expect(sanitizeDrumVoices(["kick", "tom", "snare", "clap"])).toEqual(["kick", "snare"]);
+    expect(sanitizeDrumVoices(["openHat", "closedHat", "clap"])).toEqual(["openHat", "clap"]);
+    expect(sanitizeDrumVoices([])).toEqual(["kick"]);
   });
 });
 

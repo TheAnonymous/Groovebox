@@ -4,10 +4,11 @@ import type {
   BarPattern,
   ChordColor,
   ChordSlot,
+  DrumVoice,
   GrooveIntent,
   MixChannel,
   PhraseContour,
-  ProjectV1,
+  ProjectV2,
   RootNote,
   Scale,
   Scene,
@@ -23,6 +24,7 @@ import {
   CHORD_COLORS,
   CONTOURS,
   DYNAMICS,
+  DRUM_VOICES,
   INTENTS,
   MAX_SWING,
   MAX_TEMPO,
@@ -31,6 +33,7 @@ import {
   SCALES,
   SCENE_COUNT,
   SCHEMA_VERSION,
+  SOUND_PRESETS,
   STEP_LENGTHS,
   STEPS_PER_BAR,
   TRACK_KINDS,
@@ -49,7 +52,35 @@ function enumValue<T extends string>(value: unknown, allowed: readonly T[], fall
   return typeof value === "string" && allowed.includes(value as T) ? (value as T) : fallback;
 }
 
-function sanitizeStep(value: unknown, fallback: Step, track: TrackKind, stepIndex: number): Step {
+export function sanitizeDrumVoices(value: unknown, fallback: readonly DrumVoice[] = ["kick"]): DrumVoice[] {
+  const candidates = Array.isArray(value)
+    ? value.filter((voice): voice is DrumVoice => typeof voice === "string" && DRUM_VOICES.includes(voice as DrumVoice))
+    : [...fallback];
+  const unique: DrumVoice[] = [];
+  for (const voice of candidates) {
+    if (unique.includes(voice)) continue;
+    if ((voice === "kick" && unique.includes("tom")) || (voice === "tom" && unique.includes("kick"))) continue;
+    if ((voice === "closedHat" && unique.includes("openHat")) || (voice === "openHat" && unique.includes("closedHat"))) continue;
+    unique.push(voice);
+    if (unique.length === 2) break;
+  }
+  return unique.length ? unique : sanitizeDrumVoices(fallback.length ? [...fallback] : ["kick"], ["kick"]);
+}
+
+function legacyDrumVoice(variation: unknown): DrumVoice {
+  const value = finite(variation, 0, 0, 1);
+  if (value >= 0.72) return "closedHat";
+  if (value >= 0.3) return "snare";
+  return "kick";
+}
+
+function sanitizeStep(
+  value: unknown,
+  fallback: Step,
+  track: TrackKind,
+  stepIndex: number,
+  legacy: boolean,
+): Step {
   const source = record(value);
   const enabled = typeof source.enabled === "boolean" ? source.enabled : fallback.enabled;
   if (!enabled) return emptyStep();
@@ -59,16 +90,22 @@ function sanitizeStep(value: unknown, fallback: Step, track: TrackKind, stepInde
     variation: finite(source.variation, fallback.variation, 0, 1),
     degreeOffset: safeDegreeOffset(track, stepIndex, finite(source.degreeOffset, fallback.degreeOffset, -2, 4)),
     length: enumValue(source.length, STEP_LENGTHS, fallback.length) as StepLength,
+    drumVoices: track === "drums"
+      ? legacy
+        ? [legacyDrumVoice(source.variation)]
+        : sanitizeDrumVoices(source.drumVoices, fallback.drumVoices)
+      : [],
   };
+  if (legacy && track === "drums") clean.variation = 0;
   if (isAnchor(track, stepIndex, clean) && clean.dynamics === "ghost") clean.dynamics = "normal";
   return clean;
 }
 
-function sanitizeBar(value: unknown, fallback: BarPattern, track: TrackKind): BarPattern {
+function sanitizeBar(value: unknown, fallback: BarPattern, track: TrackKind, legacy: boolean): BarPattern {
   const steps = Array.isArray(record(value).steps) ? (record(value).steps as unknown[]) : [];
   return {
     steps: Array.from({ length: STEPS_PER_BAR }, (_, index) =>
-      sanitizeStep(steps[index], fallback.steps[index] ?? emptyStep(), track, index),
+      sanitizeStep(steps[index], fallback.steps[index] ?? emptyStep(), track, index, legacy),
     ),
   };
 }
@@ -84,7 +121,7 @@ function sanitizeMacros(value: unknown, fallback: TrackMacros): TrackMacros {
   };
 }
 
-function sanitizeTrack(value: unknown, fallback: TrackPattern, track: TrackKind): TrackPattern {
+function sanitizeTrack(value: unknown, fallback: TrackPattern, track: TrackKind, legacy: boolean): TrackPattern {
   const source = record(value);
   const bars = Array.isArray(source.bars) ? source.bars : [];
   return {
@@ -92,7 +129,7 @@ function sanitizeTrack(value: unknown, fallback: TrackPattern, track: TrackKind)
     intent: enumValue(source.intent, INTENTS, fallback.intent) as GrooveIntent,
     contour: enumValue(source.contour, CONTOURS, fallback.contour) as PhraseContour,
     bars: Array.from({ length: BARS_PER_SCENE }, (_, index) =>
-      sanitizeBar(bars[index], fallback.bars[index]!, track),
+      sanitizeBar(bars[index], fallback.bars[index]!, track, legacy),
     ),
     macros: sanitizeMacros(source.macros, fallback.macros),
   };
@@ -107,7 +144,7 @@ function sanitizeChord(value: unknown, fallback: ChordSlot): ChordSlot {
   };
 }
 
-function sanitizeScene(value: unknown, fallback: Scene): Scene {
+function sanitizeScene(value: unknown, fallback: Scene, legacy: boolean): Scene {
   const source = record(value);
   const chords = Array.isArray(source.chords) ? source.chords : [];
   const tracks = Array.isArray(source.tracks) ? source.tracks : [];
@@ -122,7 +159,7 @@ function sanitizeScene(value: unknown, fallback: Scene): Scene {
     ),
     tracks: TRACK_KINDS.map((track) => {
       const candidate = tracks.find((entry) => record(entry).instrument === track);
-      return sanitizeTrack(candidate, fallback.tracks.find((entry) => entry.instrument === track)!, track);
+      return sanitizeTrack(candidate, fallback.tracks.find((entry) => entry.instrument === track)!, track, legacy);
     }),
   };
 }
@@ -149,13 +186,24 @@ export function looksLikeProject(value: unknown): boolean {
   );
 }
 
-export function sanitizeProject(value: unknown): ProjectV1 {
+export function looksLikeLegacyProject(value: unknown): boolean {
+  const source = record(value);
+  return source.schemaVersion === 1 && Array.isArray(source.scenes) && source.scenes.length > 0 && Array.isArray(source.mix);
+}
+
+export function sanitizeProject(value: unknown): ProjectV2 {
   const fallback = createFactoryProject();
   const source = record(value);
   const scenes = Array.isArray(source.scenes) ? source.scenes : [];
   const mix = Array.isArray(source.mix) ? source.mix : [];
+  const legacy = source.schemaVersion === 1;
+  const rawPresets = record(source.soundPresets);
   return {
     schemaVersion: SCHEMA_VERSION,
+    soundPresets: Object.fromEntries(TRACK_KINDS.map((track) => [
+      track,
+      enumValue(rawPresets[track], SOUND_PRESETS[track], fallback.soundPresets[track]),
+    ])) as ProjectV2["soundPresets"],
     tempo: finite(source.tempo, fallback.tempo, MIN_TEMPO, MAX_TEMPO),
     key: enumValue(source.key, ROOT_NOTES, fallback.key) as RootNote,
     scale: enumValue(source.scale, SCALES, fallback.scale) as Scale,
@@ -165,12 +213,12 @@ export function sanitizeProject(value: unknown): ProjectV1 {
       sanitizeMix(mix.find((entry) => record(entry).instrument === track), fallback.mix.find((entry) => entry.instrument === track)!, track),
     ),
     scenes: Array.from({ length: SCENE_COUNT }, (_, index) =>
-      sanitizeScene(scenes[index], fallback.scenes[index]!),
+      sanitizeScene(scenes[index], fallback.scenes[index]!, legacy),
     ),
   };
 }
 
-export function isValidProject(value: unknown): value is ProjectV1 {
+export function isValidProject(value: unknown): value is ProjectV2 {
   if (!looksLikeProject(value)) return false;
   const sanitized = sanitizeProject(value);
   return JSON.stringify(sanitized) === JSON.stringify(value);

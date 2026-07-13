@@ -127,9 +127,12 @@ export function roleOptions(track: TrackKind): RoleOption[] {
   switch (track) {
     case "drums":
       return [
-        { value: "kick", label: "Kick", degreeOffset: 0, variation: 0 },
-        { value: "snare", label: "Snare", degreeOffset: 0, variation: 0.5 },
-        { value: "hat", label: "Hi-Hat", degreeOffset: 0, variation: 0.85 },
+        { value: "kick", label: "Kick", degreeOffset: 0 },
+        { value: "snare", label: "Snare", degreeOffset: 0 },
+        { value: "clap", label: "Clap", degreeOffset: 0 },
+        { value: "closedHat", label: "Closed Hat", degreeOffset: 0 },
+        { value: "openHat", label: "Open Hat", degreeOffset: 0 },
+        { value: "tom", label: "Tom", degreeOffset: 0 },
       ];
     case "bass":
       return [
@@ -155,12 +158,7 @@ export function roleOptions(track: TrackKind): RoleOption[] {
 export function currentRole(track: TrackKind, step: Step): RoleOption {
   const options = roleOptions(track);
   if (track === "drums") {
-    return options.reduce((best, option) =>
-      Math.abs((option.variation ?? 0) - step.variation) <
-      Math.abs((best.variation ?? 0) - step.variation)
-        ? option
-        : best,
-    );
+    return options.find((option) => option.value === step.drumVoices[0]) ?? options[0]!;
   }
   return options.find((option) => option.degreeOffset === step.degreeOffset) ?? options[0]!;
 }

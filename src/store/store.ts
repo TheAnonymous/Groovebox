@@ -8,21 +8,24 @@ import {
   setPatternIntent,
   varyPattern,
 } from "../domain/patterns";
-import { sanitizeProject } from "../domain/sanitize";
+import { sanitizeDrumVoices, sanitizeProject } from "../domain/sanitize";
 import type {
   AppState,
   ChordSlot,
+  DrumVoice,
   GrooveIntent,
   MacroKind,
   PhraseContour,
-  ProjectV1,
+  ProjectV2,
   RootNote,
   Scale,
+  SoundPresetId,
   StepDynamics,
   StepLength,
   TrackKind,
   VariationAmount,
 } from "../domain/types";
+import { SOUND_PRESETS } from "../domain/types";
 
 export type Action =
   | { type: "ui/select-scene"; scene: number }
@@ -32,12 +35,13 @@ export type Action =
   | { type: "ui/variation-amount"; amount: VariationAmount }
   | { type: "transport/update"; update: Partial<AppState["transport"]> }
   | { type: "autosave/status"; status: AppState["autosave"] }
-  | { type: "project/replace"; project: ProjectV1 }
+  | { type: "project/replace"; project: ProjectV2 }
   | { type: "project/tempo"; value: number }
   | { type: "project/key"; value: RootNote }
   | { type: "project/scale"; value: Scale }
   | { type: "project/swing"; value: number }
   | { type: "project/master"; value: number }
+  | { type: "project/preset"; track: TrackKind; value: SoundPresetId }
   | { type: "mix/mute"; track: TrackKind }
   | { type: "mix/solo"; track: TrackKind }
   | { type: "mix/volume"; track: TrackKind; value: number }
@@ -45,6 +49,7 @@ export type Action =
   | { type: "step/dynamics"; value: StepDynamics }
   | { type: "step/length"; value: StepLength }
   | { type: "step/role"; degreeOffset: number; variation?: number }
+  | { type: "step/drum-voice"; voice: DrumVoice }
   | { type: "track/macro"; macro: MacroKind; value: number }
   | { type: "track/intent"; value: GrooveIntent }
   | { type: "track/contour"; value: PhraseContour }
@@ -62,10 +67,10 @@ const HISTORY_LIMIT = 100;
 export class GrooveboxStore {
   private state: AppState;
   private readonly listeners = new Set<StoreListener>();
-  private undoStack: ProjectV1[] = [];
-  private redoStack: ProjectV1[] = [];
+  private undoStack: ProjectV2[] = [];
+  private redoStack: ProjectV2[] = [];
 
-  constructor(project: ProjectV1) {
+  constructor(project: ProjectV2) {
     this.state = {
       project: sanitizeProject(project),
       ui: createUiState(),
@@ -152,6 +157,12 @@ export class GrooveboxStore {
         return assignIfChanged(project, "swing", Math.max(0, Math.min(0.4, action.value)));
       case "project/master":
         return assignIfChanged(project, "masterVolume", Math.max(0, Math.min(1, action.value)));
+      case "project/preset": {
+        const allowed = SOUND_PRESETS[action.track] as readonly string[];
+        if (!allowed.includes(action.value) || project.soundPresets[action.track] === action.value) return false;
+        (project.soundPresets as Record<TrackKind, SoundPresetId>)[action.track] = action.value;
+        return true;
+      }
       case "mix/mute": {
         const mix = findMix(project, action.track);
         if (!mix) return false;
@@ -198,6 +209,18 @@ export class GrooveboxStore {
         step.degreeOffset = action.degreeOffset;
         if (action.variation !== undefined) step.variation = action.variation;
         return JSON.stringify(step) !== beforeStep;
+      }
+      case "step/drum-voice": {
+        const step = selectedStep(this.state);
+        if (!step?.enabled || ui.selectedTrack !== "drums") return false;
+        if (step.drumVoices.includes(action.voice)) {
+          if (step.drumVoices.length === 1) return false;
+          step.drumVoices = step.drumVoices.filter((voice) => voice !== action.voice);
+          return true;
+        }
+        if (!canAddDrumVoice(step.drumVoices, action.voice)) return false;
+        step.drumVoices = sanitizeDrumVoices([...step.drumVoices, action.voice], step.drumVoices);
+        return true;
       }
       case "track/macro": {
         const pattern = selectedPattern(this.state);
@@ -267,7 +290,7 @@ function assignIfChanged<T extends object, K extends keyof T>(target: T, key: K,
   return true;
 }
 
-function findMix(project: ProjectV1, track: TrackKind) {
+function findMix(project: ProjectV2, track: TrackKind) {
   return project.mix.find((mix) => mix.instrument === track);
 }
 
@@ -286,7 +309,15 @@ export function selectedStep(state: AppState) {
   return selected ? findStep(state, selected.bar, selected.step) : undefined;
 }
 
-export function effectiveTrackGains(project: ProjectV1): Record<TrackKind, number> {
+export function canAddDrumVoice(active: readonly DrumVoice[], voice: DrumVoice): boolean {
+  if (active.includes(voice)) return true;
+  if (active.length >= 2) return false;
+  if ((voice === "kick" && active.includes("tom")) || (voice === "tom" && active.includes("kick"))) return false;
+  if ((voice === "closedHat" && active.includes("openHat")) || (voice === "openHat" && active.includes("closedHat"))) return false;
+  return true;
+}
+
+export function effectiveTrackGains(project: ProjectV2): Record<TrackKind, number> {
   const hasSolo = project.mix.some((mix) => mix.solo && !mix.muted);
   return Object.fromEntries(
     project.mix.map((mix) => [

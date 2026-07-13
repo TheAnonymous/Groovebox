@@ -3,7 +3,7 @@ import type {
   ChordSlot,
   GrooveIntent,
   PhraseContour,
-  ProjectV1,
+  ProjectV2,
   Scene,
   TrackKind,
   TrackMacros,
@@ -96,7 +96,7 @@ function makeTrack(track: TrackKind, sceneIndex: number): TrackPattern {
   return { instrument: track, intent, contour, bars, macros: macrosFor(track, sceneIndex) };
 }
 
-export function createFactoryProject(): ProjectV1 {
+export function createFactoryProject(): ProjectV2 {
   const scenes: Scene[] = SCENE_META.map((meta, sceneIndex) => ({
     name: meta.name,
     subtitle: meta.subtitle,
@@ -106,6 +106,13 @@ export function createFactoryProject(): ProjectV1 {
 
   return {
     schemaVersion: SCHEMA_VERSION,
+    soundPresets: {
+      drums: "neon84",
+      bass: "round",
+      chords: "analog",
+      lead: "clear",
+      pad: "velvet",
+    },
     tempo: 96,
     key: "A",
     scale: "minor",
@@ -139,6 +146,7 @@ export function createTransportState(): TransportState {
     bar: 0,
     step: 0,
     peak: 0,
+    trackPeaks: Object.fromEntries(TRACK_KINDS.map((track) => [track, 0])) as TransportState["trackPeaks"],
     message: "Bereit – Start aktiviert den Klang",
   };
 }
