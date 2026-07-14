@@ -23,7 +23,12 @@ test("zeigt das vollständige Desktop-Instrument ohne Laufzeitfehler", async ({ 
   await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", "/Groovebox/favicon.svg");
   await expect(page.locator(".gb-step")).toHaveCount(64);
   await expect(page.locator(".gb-scene")).toHaveCount(4);
+  await expect(page.locator(".gb-scene__art")).toHaveCount(4);
   await expect(page.locator(".gb-channel")).toHaveCount(5);
+  const sceneArt = await page.locator(".gb-scene__art").evaluateAll((elements) => elements.map((element) => getComputedStyle(element).backgroundImage));
+  expect(sceneArt).toHaveLength(4);
+  expect(sceneArt.every((image) => image.includes("/assets/scenes/") && image.endsWith('.webp\")'))).toBe(true);
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://theanonymous.github.io/Groovebox/assets/social/groovebox-preview.png");
   expect(errors).toEqual([]);
   expect(externalRequests).toEqual([]);
 });

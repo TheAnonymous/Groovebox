@@ -36,6 +36,9 @@ import type { ProjectRepository } from "../storage";
 import type { BramsAdapter } from "./brams";
 
 const ICON_SPRITE = `${import.meta.env.BASE_URL}vendor/braun-ui/icons.svg`;
+const SCENE_ART = ["auftakt", "fahrt", "hoehepunkt", "ausklang"].map(
+  (name) => `${import.meta.env.BASE_URL}assets/scenes/${name}.webp`,
+);
 
 const TRACK_LABELS: Record<TrackKind, { name: string; short: string; description: string }> = {
   drums: { name: "Drums", short: "DR", description: "Sechs Drumcomputer-Stimmen geben Halt und kontrollierte Fills." },
@@ -259,6 +262,7 @@ export class GrooveboxApp {
         const running = state.transport.status === "playing" && state.transport.runningScene === index;
         const queued = state.transport.queuedScene === index;
         return `<button class="gb-scene ${selected ? "is-selected" : ""} ${running ? "is-running" : ""} ${queued ? "is-queued" : ""}" type="button" data-action="select-scene" data-scene="${index}" data-focus-key="scene-${index}" aria-current="${selected ? "true" : "false"}" title="${state.transport.status === "playing" ? "Zum nächsten Takt vormerken" : "Szene bearbeiten"}">
+          <span class="gb-scene__art" aria-hidden="true" style="--scene-art:url(${SCENE_ART[index]})"></span>
           <span class="gb-scene__number">0${index + 1}</span>
           <span class="gb-scene__copy"><strong>${escapeHtml(scene.name)}</strong><small>${escapeHtml(scene.subtitle)}</small></span>
           <span class="gb-scene__states">${selected ? "BEARBEITUNG" : ""}${running ? " · LÄUFT" : ""}${queued ? " · NÄCHSTER TAKT" : ""}</span>
