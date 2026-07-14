@@ -341,8 +341,10 @@ kbd {
 
 .gb-channel__select {
   display: grid;
-  grid-template-columns: 1.7rem 1fr;
-  align-items: baseline;
+  grid-template-columns: 2.45rem minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 0.08rem 0.48rem;
   padding: 0;
   border: 0;
   background: transparent;
@@ -350,13 +352,40 @@ kbd {
   text-align: left;
 }
 
-.gb-channel__select span {
+.gb-channel__art {
+  width: 2.25rem;
+  border: 1px solid var(--gb-rule);
+  aspect-ratio: 1;
+  background-image: var(--track-art);
+  background-position: center;
+  background-size: cover;
+  filter: saturate(0.78) contrast(1.02);
+  grid-column: 1;
+  grid-row: 1 / 3;
+  transition: filter 100ms ease;
+}
+
+.gb-channel.is-selected .gb-channel__art, .gb-channel__select:hover .gb-channel__art {
+  border-color: var(--gb-cyan-dark);
+  filter: saturate(1) contrast(1.08);
+}
+
+.gb-channel__code {
   color: var(--gb-muted);
   font-family: var(--bu-font-mono);
   font-size: 0.54rem;
+  grid-column: 2;
+  grid-row: 1;
 }
 
-.gb-channel__select strong { overflow: hidden; font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
+.gb-channel__select strong {
+  overflow: hidden;
+  font-size: 0.7rem;
+  grid-column: 2;
+  grid-row: 2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .gb-channel__meter {
   position: relative;
@@ -407,14 +436,31 @@ kbd {
 .gb-sequencer { min-width: 0; }
 
 .gb-section-heading {
+  position: relative;
   display: flex;
   min-height: 5.2rem;
+  overflow: hidden;
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
   padding: 0.85rem;
   border-bottom: 1px solid var(--gb-rule);
 }
+
+.gb-section-heading::before {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background-image: var(--performance-art);
+  background-position: center 42%;
+  background-size: cover;
+  content: "";
+  filter: saturate(0.65);
+  opacity: 0.075;
+  pointer-events: none;
+}
+
+.gb-section-heading > * { position: relative; z-index: 1; }
 
 .gb-section-heading p:not(.gb-eyebrow) { margin: 0.22rem 0 0; color: var(--gb-muted); font-size: 0.67rem; }
 
@@ -736,5 +782,5 @@ kbd {
 
 @media (prefers-reduced-motion: reduce) {
   .gb-scene.is-queued::before { animation: none; }
-  .gb-step, .gb-channel__meter i, .gb-scene__art { transition: none; }
+  .gb-step, .gb-channel__meter i, .gb-scene__art, .gb-channel__art { transition: none; }
 }

@@ -5,8 +5,10 @@ test.beforeEach(async ({ page, browserName }) => {
   await page.goto("./");
   await page.evaluate(() => localStorage.clear());
   await page.evaluate(() => document.fonts.ready);
-  await page.locator(".gb-scene__art").evaluateAll(async (elements) => {
+  await page.locator(".gb-scene__art, .gb-channel__art").evaluateAll(async (elements) => {
     const sources = elements.map((element) => getComputedStyle(element).backgroundImage.slice(5, -2));
+    const performance = document.querySelector(".gb-section-heading");
+    if (performance) sources.push(getComputedStyle(performance, "::before").backgroundImage.slice(5, -2));
     await Promise.all(sources.map((source) => new Promise<void>((resolve, reject) => {
       const image = new Image();
       image.addEventListener("load", () => resolve(), { once: true });

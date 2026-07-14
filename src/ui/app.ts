@@ -39,6 +39,10 @@ const ICON_SPRITE = `${import.meta.env.BASE_URL}vendor/braun-ui/icons.svg`;
 const SCENE_ART = ["auftakt", "fahrt", "hoehepunkt", "ausklang"].map(
   (name) => `${import.meta.env.BASE_URL}assets/scenes/${name}.webp`,
 );
+const TRACK_ART = Object.fromEntries(
+  TRACK_KINDS.map((track) => [track, `${import.meta.env.BASE_URL}assets/tracks/${track}.webp`]),
+) as Record<TrackKind, string>;
+const PERFORMANCE_ART = `${import.meta.env.BASE_URL}assets/promo/performance-wide.webp`;
 
 const TRACK_LABELS: Record<TrackKind, { name: string; short: string; description: string }> = {
   drums: { name: "Drums", short: "DR", description: "Sechs Drumcomputer-Stimmen geben Halt und kontrollierte Fills." },
@@ -159,7 +163,7 @@ export class GrooveboxApp {
           ${this.scenes(state)}
           <div class="gb-workspace">
             ${this.mixer(state)}
-            <section class="gb-sequencer bu-card" aria-labelledby="sequence-title">
+            <section class="gb-sequencer bu-card" aria-labelledby="sequence-title" style="--performance-art:url(${PERFORMANCE_ART})">
               <header class="gb-section-heading">
                 <div>
                   <p class="gb-eyebrow">${escapeHtml(scene.name)} · ${TRACK_LABELS[state.ui.selectedTrack].short}</p>
@@ -281,7 +285,8 @@ export class GrooveboxApp {
           const meter = mix.muted ? 0 : Math.max(0, Math.min(1, state.transport.trackPeaks[track]));
           return `<article class="gb-channel ${selected ? "is-selected" : ""}">
             <button class="gb-channel__select" type="button" data-action="select-track" data-track="${track}" data-focus-key="track-${track}" aria-pressed="${selected}" title="Spur ${index + 1} auswählen (Taste ${index + 1})">
-              <span>${TRACK_LABELS[track].short}</span><strong>${TRACK_LABELS[track].name}</strong>
+              <span class="gb-channel__art" aria-hidden="true" style="--track-art:url(${TRACK_ART[track]})"></span>
+              <span class="gb-channel__code">${TRACK_LABELS[track].short}</span><strong>${TRACK_LABELS[track].name}</strong>
             </button>
             <div class="gb-channel__meter" data-meter-track="${track}" data-track-peak="${meter}" role="meter" aria-label="Pegel ${TRACK_LABELS[track].name}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(meter * 100)}"><i style="--level:${meter}"></i></div>
             <div class="gb-channel__buttons">

@@ -25,9 +25,14 @@ test("zeigt das vollständige Desktop-Instrument ohne Laufzeitfehler", async ({ 
   await expect(page.locator(".gb-scene")).toHaveCount(4);
   await expect(page.locator(".gb-scene__art")).toHaveCount(4);
   await expect(page.locator(".gb-channel")).toHaveCount(5);
+  await expect(page.locator(".gb-channel__art")).toHaveCount(5);
   const sceneArt = await page.locator(".gb-scene__art").evaluateAll((elements) => elements.map((element) => getComputedStyle(element).backgroundImage));
   expect(sceneArt).toHaveLength(4);
   expect(sceneArt.every((image) => image.includes("/assets/scenes/") && image.endsWith('.webp\")'))).toBe(true);
+  const trackArt = await page.locator(".gb-channel__art").evaluateAll((elements) => elements.map((element) => getComputedStyle(element).backgroundImage));
+  expect(trackArt).toHaveLength(5);
+  expect(trackArt.every((image) => image.includes("/assets/tracks/") && image.endsWith('.webp\")'))).toBe(true);
+  await expect.poll(() => page.locator(".gb-section-heading").evaluate((element) => getComputedStyle(element, "::before").backgroundImage)).toContain("/assets/promo/performance-wide.webp");
   await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://theanonymous.github.io/Groovebox/assets/social/groovebox-preview.png");
   expect(errors).toEqual([]);
   expect(externalRequests).toEqual([]);

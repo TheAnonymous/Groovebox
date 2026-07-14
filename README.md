@@ -7,7 +7,12 @@ Snare, Clap, Closed/Open Hat und Tom werden lokal mit Tone.js synthetisiert.
 
 **Live:** https://theanonymous.github.io/Groovebox/
 
-![Groovebox · Synthwave Sequencer](public/assets/social/groovebox-preview.png)
+![Groovebox · Synthwave Sequencer](public/assets/promo/groovebox-banner-v2.png)
+
+Weitere Motive stehen als [quadratisches Artwork](public/assets/promo/groovebox-square-v2.png),
+[Hochformat](public/assets/promo/groovebox-portrait-v2.png) und
+[Social-Preview](public/assets/social/groovebox-preview.png) bereit. Die Szenen- und
+Instrumentgrafiken werden direkt in der Anwendung verwendet.
 
 ## Entwicklung
 
