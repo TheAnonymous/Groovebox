@@ -20,15 +20,15 @@ const TEMPLATES: Record<TrackKind, readonly (readonly number[])[]> = {
   ],
   bass: [
     [0, 3, 6, 8, 11, 14],
-    [0, 2, 6, 8, 10, 14],
-    [0, 3, 7, 8, 11, 15],
-    [0, 4, 7, 8, 12, 15],
+    [0, 2, 5, 8, 10, 13],
+    [0, 3, 7, 8, 11, 14],
+    [0, 3, 6, 8, 12, 15],
   ],
   chords: [[0], [0, 8], [0, 6, 12], [0, 4, 8, 12]],
   lead: [
-    [0, 2, 4, 6, 8, 10, 12, 14],
-    [1, 3, 5, 7, 9, 11, 13, 15],
-    [0, 3, 6, 9, 12, 15],
+    [0, 2, 5, 8, 10, 13],
+    [1, 3, 6, 9, 11, 14],
+    [0, 3, 6, 10, 13, 15],
     [2, 5, 10, 13],
     [0, 3, 5, 8, 11, 13],
   ],
@@ -180,6 +180,16 @@ export function generateTypicalPattern(
       setHit(bar, 4, track);
       setHit(bar, 8, track, random() > 0.3);
       setHit(bar, 12, track);
+      bar.steps.forEach((step, stepIndex) => {
+        if (!step.enabled || isAnchor(track, stepIndex, step)) return;
+        step.dynamics = stepIndex % 4 === 2 ? "ghost" : "normal";
+        step.variation = ((barIndex * 3 + stepIndex) % 5) / 5;
+      });
+      if (barIndex % 2 === 1 && bar.steps[14]?.enabled) {
+        bar.steps[14]!.drumVoices = ["openHat"];
+        bar.steps[14]!.dynamics = "normal";
+        bar.steps[14]!.length = "long";
+      }
       if (barIndex === 3 && random() > 0.35) {
         setHit(bar, 15, track);
         bar.steps[15]!.drumVoices = random() > 0.48 ? ["tom"] : ["openHat"];
@@ -194,11 +204,13 @@ export function generateTypicalPattern(
     } else {
       const first = bar.steps.find((step) => step.enabled);
       if (first) first.dynamics = "accent";
-      if (track === "lead" || track === "bass") {
-        const active = bar.steps.filter((step) => step.enabled);
-        const varied = active[Math.max(0, active.length - 1)];
-        if (varied) varied.variation = 1;
-      }
+      const active = bar.steps.filter((step) => step.enabled);
+      active.forEach((step, index) => {
+        if (index > 0 && index % 3 === 2) step.dynamics = "ghost";
+        if (track === "chords" || track === "pad") step.length = "long";
+      });
+      const varied = active[Math.max(0, active.length - 1)];
+      if (varied) varied.variation = 0.58 + ((barIndex + active.length) % 3) * 0.2;
     }
     applyIntent(track, intent, bar, barIndex);
     return bar;

@@ -6,7 +6,7 @@ import {
   scaleDegreeMidi,
   safeDegreeOffset,
 } from "../src/domain/music";
-import { createFactoryProject } from "../src/domain/defaults";
+import { createFactoryProject, voiceLeadingDistance } from "../src/domain/defaults";
 import {
   cycleStep,
   emptyStep,
@@ -153,6 +153,48 @@ describe("Werkprojekt und Sanitizing", () => {
     expect(new Set(first.scenes.map((scene) => JSON.stringify(scene.tracks))).size).toBe(4);
     expect(sanitizeProject(first)).toEqual(first);
     expect(isValidProject(first)).toBe(true);
+  });
+
+  it("arrangiert das Werkprojekt als dynamischen cinematic Synthwave-Vierszenenbogen", () => {
+    const project = createFactoryProject();
+    for (const scene of project.scenes) {
+      const drums = scene.tracks.find((track) => track.instrument === "drums")!;
+      const bass = scene.tracks.find((track) => track.instrument === "bass")!;
+      const chords = scene.tracks.find((track) => track.instrument === "chords")!;
+      const lead = scene.tracks.find((track) => track.instrument === "lead")!;
+      const pad = scene.tracks.find((track) => track.instrument === "pad")!;
+      for (const bar of drums.bars) {
+        expect(bar.steps[0]!.drumVoices).toContain("kick");
+        expect(bar.steps[4]!.drumVoices).toContain("snare");
+        expect(bar.steps[8]!.drumVoices).toContain("kick");
+        expect(bar.steps[12]!.drumVoices).toContain("snare");
+      }
+      for (const bar of bass.bars) {
+        expect(bar.steps[0]).toMatchObject({ enabled: true, dynamics: "accent" });
+        expect(bar.steps[8]).toMatchObject({ enabled: true, dynamics: "accent" });
+      }
+      expect(chords.bars.flatMap((bar) => bar.steps).filter((step) => step.enabled).every((step) => step.length === "long")).toBe(true);
+      expect(pad.bars.flatMap((bar) => bar.steps).filter((step) => step.enabled).every((step) => step.length === "long")).toBe(true);
+      expect(lead.bars.every((bar) => bar.steps.filter((step) => !step.enabled).length >= 8)).toBe(true);
+    }
+    const drivingDrums = project.scenes[1]!.tracks.find((track) => track.instrument === "drums")!;
+    expect(drivingDrums.bars.flatMap((bar) => bar.steps).some((step) => step.dynamics === "ghost" && step.drumVoices.includes("closedHat"))).toBe(true);
+    expect(drivingDrums.bars[3]!.steps.slice(14).flatMap((step) => step.drumVoices).some((voice) => voice === "tom" || voice === "openHat")).toBe(true);
+  });
+
+  it("optimiert nur die Werk-Inversionen für weiche Stimmenführung", () => {
+    const project = createFactoryProject();
+    for (const scene of project.scenes) {
+      const chords = scene.chords.map((chord) => chordNotes(project.key, project.scale, chord, 3));
+      for (let index = 1; index < chords.length; index += 1) {
+        const selected = voiceLeadingDistance(chords[index - 1]!, chords[index]!);
+        const source = scene.chords[index]!;
+        const best = Math.min(...[-1, 0, 1].map((inversion) =>
+          voiceLeadingDistance(chords[index - 1]!, chordNotes(project.key, project.scale, { ...source, inversion }, 3)),
+        ));
+        expect(selected).toBeCloseTo(best, 8);
+      }
+    }
   });
 
   it("klemmt alle externen Zahlen und rekonstruiert die feste Struktur", () => {

@@ -12,6 +12,7 @@ import type {
 } from "./types";
 import { SCHEMA_VERSION, TRACK_KINDS } from "./types";
 import { emptyStep, generateTypicalPattern } from "./patterns";
+import { chordNotes } from "./music";
 
 const SCENE_META = [
   { name: "Auftakt", subtitle: "Luft und Erwartung", density: 0.34 },
@@ -93,14 +94,75 @@ function makeTrack(track: TrackKind, sceneIndex: number): TrackPattern {
     }));
   }
 
+  bars.forEach((bar, barIndex) => {
+    const active = bar.steps.filter((step) => step.enabled);
+    if (track === "chords" || track === "pad") {
+      active.forEach((step) => { step.length = "long"; });
+    }
+    if (track === "bass") {
+      bar.steps.forEach((step, stepIndex) => {
+        if (!step.enabled) return;
+        step.dynamics = stepIndex === 0 || stepIndex === 8 ? "accent" : stepIndex % 3 === 0 ? "ghost" : "normal";
+        step.length = stepIndex === 0 || stepIndex === 8 ? "normal" : "short";
+      });
+    }
+    if (track === "lead") {
+      bar.steps.forEach((step, stepIndex) => {
+        if (!step.enabled) return;
+        const inReply = stepIndex >= 8;
+        step.dynamics = inReply && stepIndex % 3 === 2 ? "ghost" : step.dynamics;
+        step.length = stepIndex % 4 === 3 ? "short" : "normal";
+      });
+      const last = active[active.length - 1];
+      if (last) last.variation = Math.max(last.variation, 0.72);
+    }
+    if (track === "drums" && barIndex === 3 && sceneIndex >= 1) {
+      const penultimate = bar.steps[14];
+      const last = bar.steps[15];
+      if (penultimate) Object.assign(penultimate, { enabled: true, dynamics: "ghost", drumVoices: ["tom"], variation: 0.38, length: "short" });
+      if (last) Object.assign(last, { enabled: true, dynamics: "normal", drumVoices: sceneIndex === 2 ? ["tom", "clap"] : ["openHat"], variation: 0.78, length: "long" });
+    }
+  });
+
   return { instrument: track, intent, contour, bars, macros: macrosFor(track, sceneIndex) };
+}
+
+export function voiceLeadingDistance(previous: readonly number[], next: readonly number[]): number {
+  if (!previous.length || !next.length) return 0;
+  const nearestMotion = next.reduce((sum, note) => sum + Math.min(...previous.map((prior) => Math.abs(note - prior))), 0) / next.length;
+  const previousCenter = previous.reduce((sum, note) => sum + note, 0) / previous.length;
+  const nextCenter = next.reduce((sum, note) => sum + note, 0) / next.length;
+  return nearestMotion + Math.abs(previousCenter - nextCenter) * 0.35;
+}
+
+export function smoothFactoryProgression(progression: readonly ChordSlot[]): ChordSlot[] {
+  const result: ChordSlot[] = [];
+  let previousNotes: number[] | null = null;
+  for (const source of progression) {
+    if (!previousNotes) {
+      const first = { ...source, inversion: 0 };
+      result.push(first);
+      previousNotes = chordNotes("A", "minor", first, 3);
+      continue;
+    }
+    const candidates = [-1, 0, 1].map((inversion) => ({ ...source, inversion }));
+    candidates.sort((left, right) => {
+      const distance = voiceLeadingDistance(previousNotes!, chordNotes("A", "minor", left, 3))
+        - voiceLeadingDistance(previousNotes!, chordNotes("A", "minor", right, 3));
+      return distance || Math.abs(left.inversion) - Math.abs(right.inversion);
+    });
+    const selected = candidates[0]!;
+    result.push(selected);
+    previousNotes = chordNotes("A", "minor", selected, 3);
+  }
+  return result;
 }
 
 export function createFactoryProject(): ProjectV2 {
   const scenes: Scene[] = SCENE_META.map((meta, sceneIndex) => ({
     name: meta.name,
     subtitle: meta.subtitle,
-    chords: (PROGRESSIONS[sceneIndex] ?? PROGRESSIONS[0]!).map((chord) => ({ ...chord })),
+    chords: smoothFactoryProgression(PROGRESSIONS[sceneIndex] ?? PROGRESSIONS[0]!),
     tracks: TRACK_KINDS.map((track) => makeTrack(track, sceneIndex)),
   }));
 

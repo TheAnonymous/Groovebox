@@ -7,10 +7,12 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "audio:lab": "vite --config vite.audio-lab.config.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:all": "npm test && npm run build && npm run test:e2e"
+    "test:audio": "playwright test --config playwright.audio.config.ts",
+    "test:all": "npm test && npm run build && npm run test:e2e && npm run test:audio"
   },
   "dependencies": {
     "tone": "15.5.27"

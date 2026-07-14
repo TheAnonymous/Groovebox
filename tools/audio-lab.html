@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>Groovebox · lokales Sound-Lab</title>
+    <link rel="stylesheet" href="./audio-lab.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">LOKAL · NICHT IM PAGES-BUILD</p>
+        <h1>Groovebox Sound-Lab</h1>
+        <p>Produktionssignalweg, Standardphrasen und Offline-Messung ohne Audioexport.</p>
+      </header>
+
+      <section class="controls" aria-label="Hörparameter">
+        <label>Makroprofil
+          <select id="macro-profile">
+            <option value="minimum">Minimum</option>
+            <option value="nominal" selected>Nominal</option>
+            <option value="maximum">Maximum</option>
+          </select>
+        </label>
+        <label>Drumrolle / Layer
+          <select id="drum-audition">
+            <option value="full">Komplette Standardphrase</option>
+            <option value="kick">Kick</option>
+            <option value="snare">Snare</option>
+            <option value="clap">Clap</option>
+            <option value="closedHat">Closed Hat</option>
+            <option value="openHat">Open Hat</option>
+            <option value="tom">Tom</option>
+            <option value="kick+closedHat">Kick + Closed Hat</option>
+            <option value="snare+clap">Snare + Clap</option>
+            <option value="tom+clap">Tom + Clap</option>
+          </select>
+        </label>
+        <button id="factory-mix" type="button">Vier-Szenen-Mix rendern</button>
+      </section>
+
+      <section>
+        <h2>15 Presets</h2>
+        <div id="presets" class="preset-grid"></div>
+      </section>
+
+      <section class="ab-panel">
+        <h2>A/B bei gleichem Hörpegel</h2>
+        <label class="check"><input id="level-match" type="checkbox" checked /> RMS-Hörpegel abgleichen</label>
+        <div class="ab-grid">
+          <div><strong>A</strong><span id="slot-a">noch leer</span><button data-play-slot="a" type="button" disabled>Play A</button></div>
+          <div><strong>B</strong><span id="slot-b">noch leer</span><button data-play-slot="b" type="button" disabled>Play B</button></div>
+        </div>
+      </section>
+
+      <section aria-live="polite">
+        <div class="result-heading"><h2>Messung</h2><span id="status">Bereit</span></div>
+        <dl id="metrics" class="metrics"></dl>
+      </section>
+    </main>
+    <script type="module" src="./audio-lab.ts"></script>
+  </body>
+</html>

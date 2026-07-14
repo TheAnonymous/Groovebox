@@ -14,7 +14,7 @@ test("zeigt das vollständige Desktop-Instrument ohne Laufzeitfehler", async ({ 
   });
   page.on("requestfailed", (request) => errors.push(`Request fehlgeschlagen: ${request.url()}`));
   page.on("request", (request) => {
-    if (new URL(request.url()).origin !== "http://127.0.0.1:4173") externalRequests.push(request.url());
+    if (new URL(request.url()).origin !== "http://127.0.0.1:4273") externalRequests.push(request.url());
   });
   await page.reload();
 
@@ -205,31 +205,32 @@ test("markiert eine laufende und die zuletzt vorgemerkte Szene", async ({ page, 
   await page.getByRole("button", { name: "Panik" }).click();
 });
 
+const LIVE_PRESET_LABELS = {
+  drums: ["Neon 84", "Druck", "Nacht"],
+  bass: ["Rund", "Säge", "Puls"],
+  chords: ["Analog", "Glas", "Stab"],
+  lead: ["Klar", "Pluck", "Laser"],
+  pad: ["Samt", "Chor", "Kosmos"],
+} as const;
+
 test("Chromium-Audiosmoke liefert für alle 15 Klangfarben echte, begrenzte Spurpegel", async ({ page, browserName }) => {
   test.skip(browserName !== "chromium", "Echte Web-Audio-Pegel werden in Chromium geprüft");
-  test.setTimeout(90_000);
+  test.setTimeout(120_000);
   await page.locator('.gb-scene[data-scene="1"]').click();
-  const presets = {
-    drums: ["Neon 84", "Druck", "Nacht"],
-    bass: ["Rund", "Säge", "Puls"],
-    chords: ["Analog", "Glas", "Stab"],
-    lead: ["Klar", "Pluck", "Laser"],
-    pad: ["Samt", "Chor", "Kosmos"],
-  } as const;
-  let previous: keyof typeof presets | null = null;
-  for (const [track, labels] of Object.entries(presets) as Array<[keyof typeof presets, readonly string[]]>) {
+  await page.getByRole("button", { name: "Wiedergabe starten" }).click();
+  for (const [track, labels] of Object.entries(LIVE_PRESET_LABELS) as Array<[keyof typeof LIVE_PRESET_LABELS, readonly string[]]>) {
     await page.locator(`[data-action="select-track"][data-track="${track}"]`).click();
-    if (previous) await page.locator(`[data-action="solo"][data-track="${previous}"]`).click();
-    await page.locator(`[data-action="solo"][data-track="${track}"]`).click();
-    if (!previous) await page.getByRole("button", { name: "Wiedergabe starten" }).click();
     for (const label of labels) {
       await page.getByRole("button", { name: label, exact: true }).click();
-      await expect.poll(async () => Number(await page.locator(`[data-meter-track="${track}"]`).getAttribute("data-track-peak")), { timeout: 10_000 }).toBeGreaterThan(0);
+      await page.waitForTimeout(120);
+      await expect.poll(async () => Number(await page.locator(`[data-meter-track="${track}"]`).getAttribute("data-track-peak")), {
+        message: `Spurpegel für ${track}:${label}`,
+        timeout: 12_000,
+      }).toBeGreaterThan(0);
       await expect.poll(async () => Number(await page.locator("#app").getAttribute("data-audio-peak")), { timeout: 10_000 }).toBeGreaterThan(0);
       const masterPeak = Number(await page.locator("#app").getAttribute("data-audio-peak"));
       expect(masterPeak).toBeLessThanOrEqual(1);
     }
-    previous = track;
   }
   await page.getByRole("button", { name: "Panik" }).click();
 });

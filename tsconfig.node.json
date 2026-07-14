@@ -14,5 +14,5 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["vite.config.ts", "playwright.config.ts"]
+  "include": ["vite.config.ts", "vite.audio-lab.config.ts", "playwright.config.ts", "playwright.audio.config.ts"]
 }

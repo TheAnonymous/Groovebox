@@ -24,7 +24,15 @@ npm run dev
 npm test
 npm run build
 npm run test:e2e
+npm run test:audio
 ```
+
+Für die lokale Hörabnahme startet `npm run audio:lab` das nicht im
+GitHub-Pages-Build enthaltene Sound-Lab ausschließlich auf
+`http://127.0.0.1:4174/audio-lab.html`. Es rendert den Produktionssignalweg
+offline, bietet A/B-Hörpegelabgleich und zeigt Peak, RMS, Crest-Faktor,
+Bandenergie, Stereokorrelation und Ausklingzeit an; einen Audioexport gibt es
+bewusst nicht.
 
 Die App benötigt keine Konten, kein Backend und lädt zur Laufzeit keine
 Ressourcen von fremden Origins. Projekte werden nur in `localStorage` des
