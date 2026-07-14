@@ -43,6 +43,8 @@ const TRACK_ART = Object.fromEntries(
   TRACK_KINDS.map((track) => [track, `${import.meta.env.BASE_URL}assets/tracks/${track}.webp`]),
 ) as Record<TrackKind, string>;
 const PERFORMANCE_ART = `${import.meta.env.BASE_URL}assets/promo/performance-wide.webp`;
+const presetArt = (track: TrackKind, preset: SoundPresetId): string =>
+  `${import.meta.env.BASE_URL}assets/presets/${track}-${preset}.webp`;
 
 const TRACK_LABELS: Record<TrackKind, { name: string; short: string; description: string }> = {
   drums: { name: "Drums", short: "DR", description: "Sechs Drumcomputer-Stimmen geben Halt und kontrollierte Fills." },
@@ -357,7 +359,7 @@ export class GrooveboxApp {
     return `<section class="bu-card gb-sound-card"><div class="gb-panel-heading"><p class="gb-eyebrow">KLANG</p><h2>Charakter</h2></div>
       <div class="gb-sound-fields">
         <fieldset class="gb-preset-field"><legend>Klangfarbe</legend><div class="bu-segmented gb-presets" role="group" aria-label="Klangfarbe ${TRACK_LABELS[track].name}">
-          ${SOUND_PRESET_DEFINITIONS[track].map((entry) => `<button class="bu-segmented__item" type="button" data-action="preset" data-preset="${entry.id}" aria-pressed="${preset === entry.id}" title="${entry.hint}">${entry.label}</button>`).join("")}
+          ${SOUND_PRESET_DEFINITIONS[track].map((entry) => `<button class="bu-segmented__item gb-preset-option" type="button" data-action="preset" data-preset="${entry.id}" aria-pressed="${preset === entry.id}" title="${entry.hint}"><span class="gb-preset-option__art" aria-hidden="true" style="--preset-art:url(${presetArt(track, entry.id)})"></span><span class="gb-preset-option__label">${entry.label}</span></button>`).join("")}
         </div><span class="bu-field__help">Gilt für alle Szenen.</span></fieldset>
         <label class="bu-field"><span class="bu-field__label">Spielabsicht</span><select class="bu-select" data-change="intent">${INTENTS.map((intent) => option(intent, INTENT_LABELS[intent], pattern.intent)).join("")}</select></label>
         <label class="bu-field"><span class="bu-field__label">Melodieverlauf</span><select class="bu-select" data-change="contour">${CONTOURS.map((contour) => option(contour, CONTOUR_LABELS[contour], pattern.contour)).join("")}</select></label>

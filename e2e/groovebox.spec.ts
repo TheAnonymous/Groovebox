@@ -26,12 +26,16 @@ test("zeigt das vollständige Desktop-Instrument ohne Laufzeitfehler", async ({ 
   await expect(page.locator(".gb-scene__art")).toHaveCount(4);
   await expect(page.locator(".gb-channel")).toHaveCount(5);
   await expect(page.locator(".gb-channel__art")).toHaveCount(5);
+  await expect(page.locator(".gb-preset-option__art")).toHaveCount(3);
   const sceneArt = await page.locator(".gb-scene__art").evaluateAll((elements) => elements.map((element) => getComputedStyle(element).backgroundImage));
   expect(sceneArt).toHaveLength(4);
   expect(sceneArt.every((image) => image.includes("/assets/scenes/") && image.endsWith('.webp\")'))).toBe(true);
   const trackArt = await page.locator(".gb-channel__art").evaluateAll((elements) => elements.map((element) => getComputedStyle(element).backgroundImage));
   expect(trackArt).toHaveLength(5);
   expect(trackArt.every((image) => image.includes("/assets/tracks/") && image.endsWith('.webp\")'))).toBe(true);
+  const presetArt = await page.locator(".gb-preset-option__art").evaluateAll((elements) => elements.map((element) => getComputedStyle(element).backgroundImage));
+  expect(presetArt).toHaveLength(3);
+  expect(presetArt.every((image) => image.includes("/assets/presets/drums-") && image.endsWith('.webp\")'))).toBe(true);
   await expect.poll(() => page.locator(".gb-section-heading").evaluate((element) => getComputedStyle(element, "::before").backgroundImage)).toContain("/assets/promo/performance-wide.webp");
   await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://theanonymous.github.io/Groovebox/assets/social/groovebox-preview.png");
   expect(errors).toEqual([]);
@@ -55,6 +59,16 @@ test("bearbeitet Steps, Details und stellt Autosave nach Reload wieder her", asy
 });
 
 test("speichert projektweite Klangfarben und bietet verständliche Tooltips", async ({ page }) => {
+  const presetArtwork = new Set<string>();
+  for (const track of ["drums", "bass", "chords", "lead", "pad"]) {
+    await page.locator(`[data-action="select-track"][data-track="${track}"]`).click();
+    const artwork = await page.locator(".gb-preset-option__art").evaluateAll((elements) => elements.map((element) => getComputedStyle(element).backgroundImage));
+    expect(artwork).toHaveLength(3);
+    expect(artwork.every((image) => image.includes(`/assets/presets/${track}-`))).toBe(true);
+    artwork.forEach((image) => presetArtwork.add(image));
+  }
+  expect(presetArtwork.size).toBe(15);
+
   await page.locator('[data-action="select-track"][data-track="lead"]').click();
   const laser = page.getByRole("button", { name: "Laser" });
   await expect(laser).toHaveAttribute("title", /futuristischem Biss/);

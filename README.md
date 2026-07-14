@@ -11,8 +11,10 @@ Snare, Clap, Closed/Open Hat und Tom werden lokal mit Tone.js synthetisiert.
 
 Weitere Motive stehen als [quadratisches Artwork](public/assets/promo/groovebox-square-v2.png),
 [Hochformat](public/assets/promo/groovebox-portrait-v2.png) und
-[Social-Preview](public/assets/social/groovebox-preview.png) bereit. Die Szenen- und
-Instrumentgrafiken werden direkt in der Anwendung verwendet.
+[Social-Preview](public/assets/social/groovebox-preview.png) bereit. Der
+[Preset-Atlas](public/assets/promo/preset-atlas-v3.png) zeigt zusätzlich alle 15
+Klangfarben. Szenen-, Instrument- und Presetgrafiken werden direkt in der
+Anwendung verwendet.
 
 ## Entwicklung
 
