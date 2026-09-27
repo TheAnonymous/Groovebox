@@ -667,12 +667,14 @@ export class GrooveboxApp {
     }
     const change = input.dataset.change;
     if (!change) return;
-    if (change === "tempo") this.store.dispatch({ type: "project/tempo", value: Number(input.value) });
+    // Arrow keys on a slider fire one change per step; together they are one undo step.
+    const slider = { mergeKey: `${change}:${input.dataset.macro ?? input.dataset.track ?? ""}` };
+    if (change === "tempo") this.store.dispatch({ type: "project/tempo", value: Number(input.value) }, slider);
     else if (change === "key") this.store.dispatch({ type: "project/key", value: input.value as AppState["project"]["key"] });
     else if (change === "scale") this.store.dispatch({ type: "project/scale", value: input.value as AppState["project"]["scale"] });
-    else if (change === "swing") this.store.dispatch({ type: "project/swing", value: Number(input.value) / 100 });
-    else if (change === "master") this.store.dispatch({ type: "project/master", value: Number(input.value) / 100 });
-    else if (change === "track-volume") this.store.dispatch({ type: "mix/volume", track: input.dataset.track as TrackKind, value: Number(input.value) / 100 });
+    else if (change === "swing") this.store.dispatch({ type: "project/swing", value: Number(input.value) / 100 }, slider);
+    else if (change === "master") this.store.dispatch({ type: "project/master", value: Number(input.value) / 100 }, slider);
+    else if (change === "track-volume") this.store.dispatch({ type: "mix/volume", track: input.dataset.track as TrackKind, value: Number(input.value) / 100 }, slider);
     else if (change === "step-dynamics") this.store.dispatch({ type: "step/dynamics", value: input.value as StepDynamics });
     else if (change === "step-length") this.store.dispatch({ type: "step/length", value: input.value as StepLength });
     else if (change === "step-role") {
@@ -680,7 +682,7 @@ export class GrooveboxApp {
       if (role) this.store.dispatch({ type: "step/role", degreeOffset: role.degreeOffset, variation: role.variation });
     } else if (change === "intent") this.store.dispatch({ type: "track/intent", value: input.value as GrooveIntent });
     else if (change === "contour") this.store.dispatch({ type: "track/contour", value: input.value as PhraseContour });
-    else if (change === "macro") this.store.dispatch({ type: "track/macro", macro: input.dataset.macro as MacroKind, value: Number(input.value) / 100 });
+    else if (change === "macro") this.store.dispatch({ type: "track/macro", macro: input.dataset.macro as MacroKind, value: Number(input.value) / 100 }, slider);
   }
 
   private async togglePlayback(): Promise<void> {

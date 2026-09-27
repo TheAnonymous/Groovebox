@@ -86,3 +86,17 @@ describe("zentraler Store", () => {
     expect(store.getState().project.scenes[0]!.tracks[0]!.bars[0]!.steps[0]!.drumVoices).toEqual(["kick"]);
   });
 });
+
+describe("Undo-Schritte", () => {
+  it("fasst einen Reglerzug zu einem Schritt zusammen und trennt verschiedene Regler", () => {
+    const store = new GrooveboxStore(createFactoryProject());
+    const tempo = store.getState().project.tempo;
+    for (const value of [91, 92, 93]) store.dispatch({ type: "project/tempo", value }, { mergeKey: "tempo" });
+    store.dispatch({ type: "project/swing", value: 0.2 }, { mergeKey: "swing" });
+    store.dispatch({ type: "history/undo" });
+    expect(store.getState().project.tempo).toBe(93);
+    store.dispatch({ type: "history/undo" });
+    expect(store.getState().project.tempo).toBe(tempo);
+    expect(store.getState().canUndo).toBe(false);
+  });
+});

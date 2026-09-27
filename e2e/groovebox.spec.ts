@@ -507,3 +507,24 @@ test("hält den Bildschirm wach, solange Musik läuft", async ({ page, browserNa
   await page.getByRole("button", { name: "Wiedergabe stoppen" }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __wakeCalls: string[] }).__wakeCalls)).toEqual(["request:screen", "release"]);
 });
+
+test("exportiert eine Szene in jedem Browser als WAV", async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
+  await page.getByRole("button", { name: "4 Takte" }).click();
+  await page.getByRole("button", { name: "Als WAV exportieren" }).click();
+  await page.locator('input[name="export-mode"][value="scene"]').check();
+  const download = page.waitForEvent("download", { timeout: 100_000 });
+  await page.getByRole("button", { name: "WAV erstellen" }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("mein-erstes-set-auftakt.wav");
+  const path = testInfo.outputPath(file.suggestedFilename());
+  await file.saveAs(path);
+  const { readFile } = await import("node:fs/promises");
+  const wav = await readFile(path);
+  expect(wav.subarray(0, 4).toString()).toBe("RIFF");
+  const seconds = wav.readUInt32LE(40) / (44_100 * 2 * 2);
+  expect(seconds).toBeGreaterThan(10);
+  let peak = 0;
+  for (let offset = 44; offset < wav.length; offset += 2) peak = Math.max(peak, Math.abs(wav.readInt16LE(offset)));
+  expect(peak).toBeGreaterThan(3_000);
+});

@@ -37,6 +37,8 @@ const RENDER_CHUNK_SECONDS = 2;
 export async function renderProject(project: ProjectV2, mode: ExportMode, onProgress?: (fraction: number) => void): Promise<AudioBuffer> {
   const plan = renderPlan(project, mode);
   const duration = planSeconds(project, plan) + RENDER_TAIL_SECONDS;
+  // Firefox cannot suspend an offline render; it renders in one go, as Tone.Offline does.
+  if (typeof OfflineAudioContext.prototype.suspend !== "function") return renderAtOnce(project, plan, duration, onProgress);
   const native = new OfflineAudioContext(2, Math.ceil(duration * RENDER_SAMPLE_RATE), RENDER_SAMPLE_RATE);
   const context = new Tone.OfflineContext(native as never);
   const original = Tone.getContext();
@@ -77,6 +79,26 @@ export async function renderProject(project: ProjectV2, mode: ExportMode, onProg
   }
   const buffer = await native.startRendering();
   if (failures.length > 0) throw failures[0] instanceof Error ? failures[0] : new Error("Das Rendern ist fehlgeschlagen.");
+  onProgress?.(1);
+  return buffer;
+}
+
+async function renderAtOnce(project: ProjectV2, plan: RenderPlan, duration: number, onProgress?: (fraction: number) => void): Promise<AudioBuffer> {
+  const original = Tone.getContext();
+  const context = new Tone.OfflineContext(2, duration, RENDER_SAMPLE_RATE);
+  Tone.setContext(context);
+  try {
+    const engine = new ToneAudioEngine(project, { offline: true });
+    await engine.scheduleOffline(plan);
+    Tone.getTransport().start(0);
+  } catch (error) {
+    Tone.setContext(original);
+    throw error;
+  }
+  const rendering = context.render(false);
+  Tone.setContext(original);
+  const buffer = (await rendering).get();
+  if (!buffer) throw new Error("Das Rendern lieferte kein Audio.");
   onProgress?.(1);
   return buffer;
 }
