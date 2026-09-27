@@ -19,7 +19,6 @@ type Curve = "linear" | "exponential";
 
 interface MappedTarget {
   param: Tone.Param<Tone.Unit.UnitName>;
-  native: AudioParam;
   scale: number;
   offset: number;
 }
@@ -30,10 +29,11 @@ export class MappedParam {
 
   constructor(private readonly targets: readonly MappedTarget[], initial: number) {
     this.current = initial;
-    // The intrinsic value, not an automation event: offline renders trigger up
-    // to one block after the note time, and an event at "now" would land after
-    // the note's own automation (e.g. cutting a kick's pitch sweep).
-    for (const target of targets) target.native.value = initial * target.scale + target.offset;
+    // An event at time 0, not at "now": offline renders trigger up to one block
+    // after the note time, and an event at "now" would land after the note's
+    // own automation (cutting a kick's pitch sweep). Time 0 precedes every real
+    // event and still gives Tone's timeline the value ramps start from.
+    for (const target of targets) target.param.setValueAtTime((initial * target.scale + target.offset) as never, 0);
   }
 
   get value(): number {
@@ -141,8 +141,8 @@ export class LeanTone {
       this.sources.forEach((source) => source.connect(this.output));
       const start = -spec.spread / 2;
       const step = count > 1 ? spec.spread / (count - 1) : 0;
-      this.frequency = new MappedParam(this.sources.map((source) => ({ param: wrap(context, source.frequency, "frequency"), native: source.frequency, scale: 1, offset: 0 })), frequency);
-      this.detune = new MappedParam(this.sources.map((source, index) => ({ param: wrap(context, source.detune, "cents"), native: source.detune, scale: 1, offset: count > 1 ? start + step * index : 0 })), detune);
+      this.frequency = new MappedParam(this.sources.map((source) => ({ param: wrap(context, source.frequency, "frequency"), scale: 1, offset: 0 })), frequency);
+      this.detune = new MappedParam(this.sources.map((source, index) => ({ param: wrap(context, source.detune, "cents"), scale: 1, offset: count > 1 ? start + step * index : 0 })), detune);
     } else if (spec.kind === "fm") {
       const carrier = oscillator(context, spec.type);
       const modulator = oscillator(context, spec.modulationType);
@@ -155,20 +155,20 @@ export class LeanTone {
       this.sources = [carrier, modulator];
       this.extraNodes.push(depth);
       this.frequency = new MappedParam([
-        { param: wrap(context, carrier.frequency, "frequency"), native: carrier.frequency, scale: 1, offset: 0 },
-        { param: wrap(context, modulator.frequency, "frequency"), native: modulator.frequency, scale: spec.harmonicity, offset: 0 },
-        { param: wrap(context, depth.gain, "frequency"), native: depth.gain, scale: spec.modulationIndex, offset: 0 },
+        { param: wrap(context, carrier.frequency, "frequency"), scale: 1, offset: 0 },
+        { param: wrap(context, modulator.frequency, "frequency"), scale: spec.harmonicity, offset: 0 },
+        { param: wrap(context, depth.gain, "frequency"), scale: spec.modulationIndex, offset: 0 },
       ], frequency);
       this.detune = new MappedParam([
-        { param: wrap(context, carrier.detune, "cents"), native: carrier.detune, scale: 1, offset: 0 },
-        { param: wrap(context, modulator.detune, "cents"), native: modulator.detune, scale: 1, offset: 0 },
+        { param: wrap(context, carrier.detune, "cents"), scale: 1, offset: 0 },
+        { param: wrap(context, modulator.detune, "cents"), scale: 1, offset: 0 },
       ], detune);
     } else {
       const source = oscillator(context, spec.type);
       source.connect(this.output);
       this.sources = [source];
-      this.frequency = new MappedParam([{ param: wrap(context, source.frequency, "frequency"), native: source.frequency, scale: 1, offset: 0 }], frequency);
-      this.detune = new MappedParam([{ param: wrap(context, source.detune, "cents"), native: source.detune, scale: 1, offset: 0 }], detune);
+      this.frequency = new MappedParam([{ param: wrap(context, source.frequency, "frequency"), scale: 1, offset: 0 }], frequency);
+      this.detune = new MappedParam([{ param: wrap(context, source.detune, "cents"), scale: 1, offset: 0 }], detune);
     }
   }
 
