@@ -49,6 +49,7 @@ import type { BramsAdapter } from "./brams";
 import { MidiLink, type MidiStatus } from "../midi";
 import { Tour, type TourStep } from "./tour";
 import { PlaybackWakeLock } from "./wake-lock";
+import { versionLabel } from "../version";
 
 const ICON_SPRITE = `${import.meta.env.BASE_URL}vendor/braun-ui/icons.svg`;
 const SCENE_ART = ["auftakt", "fahrt", "hoehepunkt", "ausklang"].map(
@@ -286,6 +287,7 @@ export class GrooveboxApp {
             </aside>
           </div>
           <p class="gb-local-note"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#info"></use></svg> Deine Projekte liegen nur in diesem Browser. Wichtige Sets sicherst du unter <strong>Projekte → Als Datei sichern</strong>. Eine Projektdatei kannst du auch einfach ins Fenster ziehen.</p>
+          <p class="gb-version" data-app-version>${escapeHtml(versionLabel())}</p>
         </main>
         ${this.dialogs(state)}
       </div>

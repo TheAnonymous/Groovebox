@@ -942,3 +942,5 @@ kbd {
 .gb-tour__actions button[hidden] { display: none; }
 @media (prefers-reduced-motion: reduce) { .gb-tour__spotlight { transition: none; } }
 @media (max-width: 1023px) { .gb-tour { display: none; } }
+
+.gb-version { margin: 0.4rem 0 0; color: var(--gb-muted); font-family: var(--bu-font-mono); font-size: 0.7rem; letter-spacing: 0.04em; text-align: right; }
