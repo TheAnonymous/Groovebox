@@ -32,6 +32,7 @@ import {
   ROOT_NOTES,
   SCALES,
   SCENE_COUNT,
+  SCENE_REPEATS,
   SCHEMA_VERSION,
   SOUND_PRESETS,
   STEP_LENGTHS,
@@ -215,6 +216,7 @@ export function sanitizeProject(value: unknown): ProjectV2 {
     scenes: Array.from({ length: SCENE_COUNT }, (_, index) =>
       sanitizeScene(scenes[index], fallback.scenes[index]!, legacy),
     ),
+    sceneRepeats: SCENE_REPEATS.find((repeats) => repeats === source.sceneRepeats) ?? fallback.sceneRepeats,
   };
 }
 

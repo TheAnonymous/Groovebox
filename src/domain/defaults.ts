@@ -187,6 +187,7 @@ export function createFactoryProject(): ProjectV2 {
       volume: instrument === "pad" ? 0.68 : instrument === "lead" ? 0.74 : 0.82,
     })),
     scenes,
+    sceneRepeats: 2,
   };
 }
 
@@ -197,6 +198,7 @@ export function createUiState(): AppUiState {
     selectedStep: null,
     variationAmount: "lively",
     locks: Object.fromEntries(TRACK_KINDS.map((track) => [track, [false, false, false, false]])) as AppUiState["locks"],
+    sceneChain: false,
   };
 }
 

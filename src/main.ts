@@ -5,6 +5,7 @@ import { ProjectCatalog } from "./catalog";
 import { GrooveboxApp } from "./ui/app";
 import { BrowserBramsAdapter } from "./ui/brams";
 import { wireShareLink } from "./ui/share-link";
+import { decodeShareFragment } from "./transfer";
 
 const root = document.querySelector<HTMLElement>("#app");
 if (!root) throw new Error("App-Container fehlt");
@@ -17,3 +18,15 @@ const app = new GrooveboxApp(root, store, audio, catalog, new BrowserBramsAdapte
 
 app.mount(loaded.warning);
 wireShareLink();
+
+/** Offers a set carried in the URL fragment, on load and when a link is pasted into an open tab. */
+function offerSharedFragment(): void {
+  const desktop = !window.matchMedia("(max-width: 1023px)").matches;
+  if (!desktop || !window.location.hash.startsWith("#p=")) return;
+  decodeShareFragment(window.location.hash)
+    .then((shared) => { if (shared) app.offerSharedProject(shared); })
+    .catch((error: unknown) => app.showSharedLinkError(error instanceof Error ? error.message : "Unbekannter Fehler"));
+}
+
+offerSharedFragment();
+window.addEventListener("hashchange", offerSharedFragment);

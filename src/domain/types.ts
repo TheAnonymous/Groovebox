@@ -32,6 +32,8 @@ export const CONTOURS = ["balanced", "rising", "falling", "callResponse"] as con
 export const CHORD_COLORS = ["triad", "open", "suspended", "rich"] as const;
 export const MACRO_KINDS = ["warmth", "drive", "space", "motion", "density"] as const;
 export const VARIATION_AMOUNTS = ["subtle", "lively", "bold"] as const;
+/** How often each scene repeats before the scene chain moves on (4 bars per pass). */
+export const SCENE_REPEATS = [1, 2, 4] as const;
 export const DRUM_VOICES = ["kick", "snare", "clap", "closedHat", "openHat", "tom"] as const;
 
 export const SOUND_PRESETS = {
@@ -53,6 +55,7 @@ export type ChordColor = (typeof CHORD_COLORS)[number];
 export type MacroKind = (typeof MACRO_KINDS)[number];
 export type VariationAmount = (typeof VARIATION_AMOUNTS)[number];
 export type DrumVoice = (typeof DRUM_VOICES)[number];
+export type SceneRepeats = (typeof SCENE_REPEATS)[number];
 export type SoundPresetId = (typeof SOUND_PRESETS)[TrackKind][number];
 export type SoundPresetMap = { [K in TrackKind]: (typeof SOUND_PRESETS)[K][number] };
 
@@ -118,6 +121,7 @@ export interface ProjectV2 extends ProjectBase {
   schemaVersion: typeof SCHEMA_VERSION;
   soundPresets: SoundPresetMap;
   scenes: Scene[];
+  sceneRepeats: SceneRepeats;
 }
 
 export interface StepV1 extends Omit<Step, "drumVoices"> {}
@@ -141,6 +145,7 @@ export interface AppUiState {
   selectedStep: SelectedStep | null;
   variationAmount: VariationAmount;
   locks: Record<TrackKind, [boolean, boolean, boolean, boolean]>;
+  sceneChain: boolean;
 }
 
 export interface TransportState {

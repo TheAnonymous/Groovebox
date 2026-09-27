@@ -5,6 +5,8 @@
 export function wireShareLink(root: ParentNode = document): void {
   const button = root.querySelector<HTMLButtonElement>("[data-share-link]");
   const feedback = root.querySelector<HTMLElement>("[data-share-feedback]");
+  const sharedHint = root.querySelector<HTMLElement>("[data-shared-hint]");
+  if (sharedHint) sharedHint.hidden = !window.location.hash.startsWith("#p=");
   if (!button || !feedback) return;
   button.addEventListener("click", async () => {
     const url = window.location.href;

@@ -28,12 +28,23 @@ import {
   MACRO_KINDS,
   ROOT_NOTES,
   SCALES,
+  SCENE_REPEATS,
   STEP_LENGTHS,
   TRACK_KINDS,
   VARIATION_AMOUNTS,
 } from "../domain/types";
 import { MAX_PROJECTS, type ProjectCatalog } from "../catalog";
-import { nameFromFileName, parseProjectFile, projectFileName, serializeProjectFile } from "../transfer";
+import { planSeconds, renderPlan, renderProject, type ExportMode } from "../audio/render";
+import { encodeWav, trimmedLength } from "../audio/wav";
+import {
+  encodeShareFragment,
+  fileSlug,
+  nameFromFileName,
+  parseProjectFile,
+  projectFileName,
+  serializeProjectFile,
+  type ImportedProject,
+} from "../transfer";
 import type { BramsAdapter } from "./brams";
 
 const ICON_SPRITE = `${import.meta.env.BASE_URL}vendor/braun-ui/icons.svg`;
@@ -99,6 +110,9 @@ const DRUM_VOICE_LABELS: Record<DrumVoice, { label: string; hint: string }> = {
 export class GrooveboxApp {
   private autosaveTimer: number | null = null;
   private editingChordBar = 0;
+  private exporting = false;
+  private shareUrl = "";
+  private sharedOffer: ImportedProject | null = null;
 
   constructor(
     private readonly root: HTMLElement,
@@ -137,9 +151,15 @@ export class GrooveboxApp {
       });
     });
     this.audio.onPlayhead((position) => {
+      const current = this.store.getState();
+      if (position.switched && current.ui.sceneChain && current.ui.selectedScene === current.transport.runningScene) {
+        this.store.dispatch({ type: "ui/select-scene", scene: position.scene });
+      }
+      const chainMessage = current.ui.sceneChain && position.step === 0 ? this.chainMessage(position.scene, position.pass, position.chainNext) : null;
       this.store.dispatch({
         type: "transport/update",
         update: {
+          ...(chainMessage ? { message: chainMessage } : {}),
           runningScene: position.scene,
           queuedScene: position.switched ? null : this.store.getState().transport.queuedScene,
           bar: position.bar,
@@ -167,6 +187,7 @@ export class GrooveboxApp {
         ${this.header(state, isPlaying)}
         <main class="gb-main">
           ${this.controlStrip(state)}
+          ${this.arrangementBar(state)}
           ${this.scenes(state)}
           <div class="gb-workspace">
             ${this.mixer(state)}
@@ -265,6 +286,31 @@ export class GrooveboxApp {
       <label class="gb-compact-field"><span>Swing</span><span class="gb-field-control"><input class="bu-range__input" type="range" min="0" max="40" step="1" value="${Math.round(state.project.swing * 100)}" data-change="swing" aria-label="Swing"><output>${Math.round(state.project.swing * 100)} %</output></span></label>
       <label class="gb-compact-field"><span>Master</span><span class="gb-field-control"><input class="bu-range__input" type="range" min="0" max="100" step="1" value="${Math.round(state.project.masterVolume * 100)}" data-change="master" aria-label="Masterpegel"><output>${Math.round(state.project.masterVolume * 100)} %</output></span></label>
     </section>`;
+  }
+
+  private arrangementBar(state: AppState): string {
+    const repeats = state.project.sceneRepeats;
+    const arcSeconds = planSeconds(state.project, renderPlan(state.project, { kind: "arc" }));
+    return `<section class="gb-arrangement" aria-label="Szenenfolge, Export und Teilen">
+      <button class="bu-button bu-button--sm gb-chain-toggle" type="button" data-action="toggle-chain" data-focus-key="chain" aria-pressed="${state.ui.sceneChain}" title="Spielt Auftakt, Fahrt, Höhepunkt und Ausklang automatisch nacheinander">
+        <span class="gb-chain-toggle__led" aria-hidden="true"></span>Szenenfolge ${state.ui.sceneChain ? "an" : "aus"}
+      </button>
+      <div class="bu-segmented gb-repeats" role="group" aria-label="Länge jeder Szene in der Szenenfolge">
+        ${SCENE_REPEATS.map((value) => `<button class="bu-segmented__item" type="button" data-action="scene-repeats" data-value="${value}" data-focus-key="repeats-${value}" aria-pressed="${repeats === value}">${value * 4} Takte</button>`).join("")}
+      </div>
+      <span class="gb-arrangement__hint">je Szene · ganzer Bogen ${formatDuration(arcSeconds)}</span>
+      <div class="gb-arrangement__actions">
+        <button class="bu-button bu-button--sm" type="button" data-action="open-export">Als WAV exportieren</button>
+        <button class="bu-button bu-button--sm" type="button" data-action="share-link">Link teilen</button>
+      </div>
+    </section>`;
+  }
+
+  private chainMessage(scene: number, pass: number, next: number | null): string {
+    const { project } = this.store.getState();
+    const name = project.scenes[scene]?.name ?? `Szene ${scene + 1}`;
+    const following = next === null ? "" : ` → ${project.scenes[next]?.name ?? `Szene ${next + 1}`}`;
+    return `Szenenfolge · ${name} ${Math.min(pass + 1, project.sceneRepeats)}/${project.sceneRepeats}${following}`;
   }
 
   private scenes(state: AppState): string {
@@ -377,7 +423,7 @@ export class GrooveboxApp {
 
   private dialogs(state: AppState): string {
     const chord = state.project.scenes[state.ui.selectedScene]!.chords[this.editingChordBar]!;
-    return `${this.projectDialogs()}
+    return `${this.projectDialogs()}${this.shareDialogs(state)}
       <div id="chord-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="chord-title"><div class="bu-dialog__header"><div><h2 id="chord-title" class="bu-dialog__title">Akkord · Takt ${this.editingChordBar + 1}</h2><p class="bu-dialog__description">Alle Varianten bleiben sicher in ${KEY_LABELS[state.project.key]} ${SCALE_LABELS[state.project.scale]}.</p></div><button class="bu-icon-button" type="button" data-bu-close aria-label="Dialog schließen"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#close"></use></svg></button></div><div class="bu-dialog__body gb-dialog-fields"><label class="bu-field"><span class="bu-field__label">Stufe</span><select class="bu-select" id="chord-degree">${DEGREE_LABELS.map((label, index) => option(String(index + 1), label, String(chord.degree))).join("")}</select></label><label class="bu-field"><span class="bu-field__label">Farbe</span><select class="bu-select" id="chord-color">${CHORD_COLORS.map((color) => option(color, COLOR_LABELS[color], chord.color)).join("")}</select></label><label class="bu-field"><span class="bu-field__label">Lage</span><select class="bu-select" id="chord-inversion">${[-1, 0, 1].map((value) => option(String(value), value === -1 ? "Tief" : value === 1 ? "Hoch" : "Mitte", String(chord.inversion))).join("")}</select></label></div><div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Abbrechen</button><button class="bu-button bu-button--primary" type="button" data-action="save-chord">Akkord übernehmen</button></div></section></div>
       <div class="bu-toast-region" data-bu-toast-region aria-live="polite" aria-atomic="false"></div>`;
   }
@@ -405,6 +451,41 @@ export class GrooveboxApp {
       <div id="delete-project-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-project-title"><div class="bu-dialog__header"><div><h2 id="delete-project-title" class="bu-dialog__title">Projekt löschen?</h2><p class="bu-dialog__description">„${escapeHtml(this.catalog.active.name)}“ und seine Sicherung werden aus diesem Browser entfernt.</p></div>${close}</div><div class="bu-dialog__body"><p>Sichere es vorher als Datei, wenn du es später noch brauchst.</p></div><div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Behalten</button><button class="bu-button bu-button--danger" type="button" data-action="confirm-delete">Endgültig löschen</button></div></section></div>`;
   }
 
+  private shareDialogs(state: AppState): string {
+    const close = `<button class="bu-icon-button" type="button" data-bu-close aria-label="Dialog schließen"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#close"></use></svg></button>`;
+    const scene = state.project.scenes[state.ui.selectedScene]!;
+    const bars = state.project.sceneRepeats * 4;
+    const arc = formatDuration(planSeconds(state.project, renderPlan(state.project, { kind: "arc" })));
+    const loop = formatDuration(planSeconds(state.project, renderPlan(state.project, { kind: "scene", scene: state.ui.selectedScene })));
+    const offer = this.sharedOffer;
+    const offerMeta = offer ? `${Math.round(offer.project.tempo)} BPM · ${KEY_LABELS[offer.project.key]} ${SCALE_LABELS[offer.project.scale]}` : "";
+    return `<div id="export-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="export-title"><div class="bu-dialog__header"><div><h2 id="export-title" class="bu-dialog__title">Als WAV exportieren</h2><p class="bu-dialog__description">Klingt wie die Wiedergabe und entsteht schneller als in Echtzeit. Läuft gerade Musik, wird sie dafür angehalten.</p></div>${close}</div>
+        <div class="bu-dialog__body gb-export-options">
+          <label class="gb-export-option"><input type="radio" name="export-mode" value="arc" checked><span><strong>Ganzer Bogen</strong><small>Auftakt, Fahrt, Höhepunkt und Ausklang mit je ${bars} Takten · ${arc}</small></span></label>
+          <label class="gb-export-option"><input type="radio" name="export-mode" value="scene"><span><strong>Nur „${escapeHtml(scene.name)}“</strong><small>${bars} Takte als Loop · ${loop}</small></span></label>
+          <p class="gb-export-status" data-export-status role="status"></p>
+        </div>
+        <div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Abbrechen</button><button class="bu-button bu-button--primary" type="button" data-action="confirm-export">WAV erstellen</button></div></section></div>
+      <div id="share-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="share-title"><div class="bu-dialog__header"><div><h2 id="share-title" class="bu-dialog__title">Link teilen</h2><p class="bu-dialog__description">Der Link enthält das ganze Set „${escapeHtml(this.catalog.active.name)}“. Er wird nirgends hochgeladen: Wer ihn öffnet, bekommt eine eigene Kopie.</p></div>${close}</div>
+        <div class="bu-dialog__body gb-share-body"><label class="bu-field"><span class="bu-field__label">Link</span><input class="bu-input" data-share-url readonly value="${escapeHtml(this.shareUrl)}"></label><button class="bu-button" type="button" data-action="copy-share">Kopieren</button><p class="gb-export-status" data-share-status role="status"></p></div>
+        <div class="bu-dialog__footer"><button class="bu-button bu-button--primary" type="button" data-bu-close>Fertig</button></div></section></div>
+      <div id="shared-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="shared-title"><div class="bu-dialog__header"><div><h2 id="shared-title" class="bu-dialog__title">Geteiltes Set öffnen?</h2><p class="bu-dialog__description">${offer ? `„${escapeHtml(offer.name)}“ · ${escapeHtml(offerMeta)}` : ""}</p></div>${close}</div>
+        <div class="bu-dialog__body"><p>Jemand hat dir dieses Set geschickt. Es wird als neues Set in deiner Projektliste angelegt; deine eigenen Sets bleiben unverändert.</p>${this.catalog.isFull ? `<p class="gb-inline-note">Alle ${MAX_PROJECTS} Plätze sind belegt. Lösche zuerst ein Projekt und öffne den Link dann noch einmal.</p>` : ""}</div>
+        <div class="bu-dialog__footer"><button class="bu-button" type="button" data-action="decline-shared">Nicht übernehmen</button><button class="bu-button bu-button--primary" type="button" data-action="accept-shared" ${this.catalog.isFull ? "disabled" : ""}>Als neues Set übernehmen</button></div></section></div>`;
+  }
+
+  /** Called at start when the URL carries a shared set. */
+  offerSharedProject(imported: ImportedProject): void {
+    this.sharedOffer = imported;
+    this.render();
+    this.brams.open("#shared-dialog");
+  }
+
+  showSharedLinkError(message: string): void {
+    clearShareFragment();
+    this.brams.toast("Geteilter Link nicht lesbar", message, "danger");
+  }
+
   private projectListItems(): string {
     return this.catalog.projects.map((project) => {
       const active = project.id === this.catalog.active.id;
@@ -422,6 +503,7 @@ export class GrooveboxApp {
       this.updateSaveDom(state);
       return;
     }
+    this.audio.setSceneChain(state.ui.sceneChain ? state.project.sceneRepeats : null);
     if (!action.type.startsWith("ui/")) {
       this.audio.syncProject(state.project);
       if (state.autosave === "saving") this.scheduleAutosave();
@@ -501,6 +583,14 @@ export class GrooveboxApp {
     else if (action === "vary") this.store.dispatch({ type: "track/vary" });
     else if (action === "randomize") this.store.dispatch({ type: "track/randomize" });
     else if (action === "open-projects") this.openProjects();
+    else if (action === "toggle-chain") this.toggleChain();
+    else if (action === "scene-repeats") this.store.dispatch({ type: "project/scene-repeats", value: Number(button.dataset.value) as AppState["project"]["sceneRepeats"] });
+    else if (action === "open-export") this.brams.open("#export-dialog");
+    else if (action === "confirm-export") void this.exportAudio();
+    else if (action === "share-link") void this.shareLink();
+    else if (action === "copy-share") void this.copyShareUrl();
+    else if (action === "accept-shared") this.acceptShared();
+    else if (action === "decline-shared") this.declineShared();
     else if (action === "switch-project") this.switchProject(button.dataset.id ?? "");
     else if (action === "new-project") this.brams.open("#new-project-dialog");
     else if (action === "confirm-new") this.confirmNewProject();
@@ -594,7 +684,7 @@ export class GrooveboxApp {
   }
 
   private closeProjectDialogs(): void {
-    for (const dialog of ["#projects-dialog", "#new-project-dialog", "#delete-project-dialog"]) this.brams.close(dialog);
+    for (const dialog of ["#projects-dialog", "#new-project-dialog", "#delete-project-dialog", "#shared-dialog"]) this.brams.close(dialog);
   }
 
   /** Saves pending edits, then opens the project the action returns with a clean history. */
@@ -629,6 +719,89 @@ export class GrooveboxApp {
     } catch (error) {
       this.brams.toast("Datei nicht geöffnet", error instanceof Error ? error.message : "Unbekannter Fehler", "danger");
     }
+  }
+
+  private toggleChain(): void {
+    const state = this.store.getState();
+    const enabled = !state.ui.sceneChain;
+    this.store.dispatch({ type: "ui/scene-chain", value: enabled });
+    if (state.transport.status === "playing") {
+      this.store.dispatch({ type: "transport/update", update: { message: enabled ? this.chainMessage(state.transport.runningScene, 0, (state.transport.runningScene + 1) % 4) : "Wiedergabe läuft" } });
+    }
+  }
+
+  private async exportAudio(): Promise<void> {
+    if (this.exporting) return;
+    const state = this.store.getState();
+    const selected = this.root.querySelector<HTMLInputElement>('input[name="export-mode"]:checked')?.value;
+    const mode: ExportMode = selected === "scene" ? { kind: "scene", scene: state.ui.selectedScene } : { kind: "arc" };
+    const status = this.root.querySelector<HTMLElement>("[data-export-status]");
+    const button = this.root.querySelector<HTMLButtonElement>('[data-action="confirm-export"]');
+    this.exporting = true;
+    if (button) button.disabled = true;
+    const estimate = Math.max(3, Math.round(planSeconds(state.project, renderPlan(state.project, mode)) * 0.7));
+    if (status) status.textContent = `Wird gerendert … etwa ${estimate} Sekunden. Du kannst das Fenster dabei offen lassen.`;
+    if (state.transport.status === "playing") this.audio.stop();
+    // Let the status paint before the synchronous clock pass of the offline render.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+    try {
+      this.flushAutosave();
+      const project = structuredClone(this.store.getState().project);
+      const buffer = await renderProject(project, mode);
+      const musicFrames = Math.round(planSeconds(project, renderPlan(project, mode)) * buffer.sampleRate);
+      const wav = encodeWav(buffer, trimmedLength(buffer, musicFrames));
+      const suffix = mode.kind === "arc" ? "bogen" : fileSlug(project.scenes[mode.scene]?.name ?? "szene");
+      const fileName = `${fileSlug(this.catalog.active.name)}-${suffix}.wav`;
+      downloadBlob(new Blob([wav], { type: "audio/wav" }), fileName);
+      if (status) status.textContent = "";
+      this.brams.close("#export-dialog");
+      this.brams.toast("WAV gespeichert", `${fileName} liegt jetzt in deinen Downloads.`, "success");
+    } catch (error) {
+      if (status) status.textContent = `Das hat nicht geklappt: ${error instanceof Error ? error.message : "unbekannter Fehler"}`;
+    } finally {
+      this.exporting = false;
+      if (button) button.disabled = false;
+    }
+  }
+
+  private async shareLink(): Promise<void> {
+    try {
+      this.flushAutosave();
+      const fragment = await encodeShareFragment(this.catalog.active.name, this.store.getState().project);
+      this.shareUrl = `${window.location.origin}${window.location.pathname}#${fragment}`;
+      const input = this.root.querySelector<HTMLInputElement>("[data-share-url]");
+      if (input) input.value = this.shareUrl;
+      this.brams.open("#share-dialog");
+      await this.copyShareUrl();
+    } catch (error) {
+      this.brams.toast("Link nicht erstellt", error instanceof Error ? error.message : "Unbekannter Fehler", "danger");
+    }
+  }
+
+  private async copyShareUrl(): Promise<void> {
+    const status = this.root.querySelector<HTMLElement>("[data-share-status]");
+    try {
+      await navigator.clipboard.writeText(this.shareUrl);
+      if (status) status.textContent = "Link kopiert – schick ihn einfach weiter.";
+    } catch {
+      this.root.querySelector<HTMLInputElement>("[data-share-url]")?.select();
+      if (status) status.textContent = "Kopieren war nicht möglich. Der Link ist markiert, kopiere ihn mit Strg+C.";
+    }
+  }
+
+  private acceptShared(): void {
+    const offer = this.sharedOffer;
+    if (!offer) return;
+    this.brams.close("#shared-dialog");
+    this.sharedOffer = null;
+    clearShareFragment();
+    this.runProjectAction(() => this.catalog.importProject(offer.name, offer.project), "Geteiltes Set übernommen");
+  }
+
+  private declineShared(): void {
+    this.brams.close("#shared-dialog");
+    this.sharedOffer = null;
+    clearShareFragment();
   }
 
   private flushAutosave(): void {
@@ -737,4 +910,13 @@ function requestPersistentStorage(): void {
   void navigator.storage?.persisted?.().then((persisted) => {
     if (!persisted) void navigator.storage.persist?.();
   }).catch(() => undefined);
+}
+
+function formatDuration(seconds: number): string {
+  const rounded = Math.round(seconds);
+  return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, "0")} min`;
+}
+
+function clearShareFragment(): void {
+  if (window.location.hash) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
 }

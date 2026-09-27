@@ -360,3 +360,46 @@ test("bleibt auf Laptops mit wenig Höhe vollständig bedienbar", async ({ page 
   await page.locator('.gb-step[data-bar="3"][data-step="15"]').scrollIntoViewIfNeeded();
   await expect(page.getByRole("button", { name: "Wiedergabe starten" })).toBeInViewport();
 });
+
+test("exportiert den ganzen Bogen als WAV und teilt ein Set per Link", async ({ page, browserName, context }, testInfo) => {
+  test.skip(browserName !== "chromium", "Export und Zwischenablage werden in Chromium geprüft");
+  test.setTimeout(120_000);
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.getByRole("button", { name: "4 Takte" }).click();
+  await expect(page.locator(".gb-arrangement__hint")).toContainText("0:40 min");
+  await page.getByRole("button", { name: /Szenenfolge aus/ }).click();
+  await expect(page.getByRole("button", { name: /Szenenfolge an/ })).toHaveAttribute("aria-pressed", "true");
+
+  await page.getByRole("button", { name: "Als WAV exportieren" }).click();
+  const download = page.waitForEvent("download", { timeout: 90_000 });
+  await page.getByRole("button", { name: "WAV erstellen" }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("mein-erstes-set-bogen.wav");
+  const path = testInfo.outputPath(file.suggestedFilename());
+  await file.saveAs(path);
+  const { readFile } = await import("node:fs/promises");
+  const wav = await readFile(path);
+  expect(wav.subarray(0, 4).toString()).toBe("RIFF");
+  const seconds = wav.readUInt32LE(40) / (44_100 * 2 * 2);
+  expect(seconds).toBeGreaterThan(40);
+  expect(seconds).toBeLessThan(46);
+  let peak = 0;
+  for (let offset = 44; offset < wav.length; offset += 2) peak = Math.max(peak, Math.abs(wav.readInt16LE(offset)));
+  expect(peak / 0x8000).toBeGreaterThan(0.2);
+  expect(peak / 0x8000).toBeLessThanOrEqual(1);
+
+  await page.getByRole("button", { name: "Link teilen" }).click();
+  await expect(page.locator("[data-share-status]")).toContainText("Link kopiert");
+  const link = await page.evaluate(() => navigator.clipboard.readText());
+  expect(link).toMatch(/#p=1\.[A-Za-z0-9_-]+$/);
+  await page.keyboard.press("Escape");
+
+  await page.goto(link);
+  await expect(page.getByRole("dialog", { name: "Geteiltes Set öffnen?" })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Geteiltes Set öffnen?" })).toContainText("Mein erstes Set");
+  await page.getByRole("button", { name: "Als neues Set übernehmen" }).click();
+  await expect(page.locator(".bu-toast").last()).toContainText("Geteiltes Set übernommen");
+  expect(new URL(page.url()).hash).toBe("");
+  await page.getByRole("button", { name: /Projekte verwalten/ }).click();
+  await expect(page.locator(".gb-project-item")).toHaveCount(2);
+});

@@ -19,13 +19,14 @@ import type {
   ProjectV2,
   RootNote,
   Scale,
+  SceneRepeats,
   SoundPresetId,
   StepDynamics,
   StepLength,
   TrackKind,
   VariationAmount,
 } from "../domain/types";
-import { SOUND_PRESETS } from "../domain/types";
+import { SCENE_REPEATS, SOUND_PRESETS } from "../domain/types";
 
 export type Action =
   | { type: "ui/select-scene"; scene: number }
@@ -33,6 +34,7 @@ export type Action =
   | { type: "ui/select-step"; bar: number; step: number }
   | { type: "ui/toggle-lock"; bar: number }
   | { type: "ui/variation-amount"; amount: VariationAmount }
+  | { type: "ui/scene-chain"; value: boolean }
   | { type: "transport/update"; update: Partial<AppState["transport"]> }
   | { type: "autosave/status"; status: AppState["autosave"] }
   | { type: "project/replace"; project: ProjectV2 }
@@ -42,6 +44,7 @@ export type Action =
   | { type: "project/scale"; value: Scale }
   | { type: "project/swing"; value: number }
   | { type: "project/master"; value: number }
+  | { type: "project/scene-repeats"; value: SceneRepeats }
   | { type: "project/preset"; track: TrackKind; value: SoundPresetId }
   | { type: "mix/mute"; track: TrackKind }
   | { type: "mix/solo"; track: TrackKind }
@@ -141,6 +144,9 @@ export class GrooveboxStore {
       case "ui/variation-amount":
         ui.variationAmount = action.amount;
         return false;
+      case "ui/scene-chain":
+        ui.sceneChain = action.value;
+        return false;
       case "transport/update":
         Object.assign(this.state.transport, action.update);
         return false;
@@ -162,6 +168,8 @@ export class GrooveboxStore {
         return assignIfChanged(project, "swing", Math.max(0, Math.min(0.4, action.value)));
       case "project/master":
         return assignIfChanged(project, "masterVolume", Math.max(0, Math.min(1, action.value)));
+      case "project/scene-repeats":
+        return SCENE_REPEATS.includes(action.value) ? assignIfChanged(project, "sceneRepeats", action.value) : false;
       case "project/preset": {
         const allowed = SOUND_PRESETS[action.track] as readonly string[];
         if (!allowed.includes(action.value) || project.soundPresets[action.track] === action.value) return false;
@@ -265,7 +273,7 @@ export class GrooveboxStore {
   /** Opens another stored project: fresh UI, empty history and nothing left to autosave. */
   private load(action: Extract<Action, { type: "project/load" }>): void {
     this.state.project = sanitizeProject(action.project);
-    this.state.ui = createUiState();
+    this.state.ui = { ...createUiState(), sceneChain: this.state.ui.sceneChain };
     this.state.transport = createTransportState();
     this.undoStack = [];
     this.redoStack = [];
