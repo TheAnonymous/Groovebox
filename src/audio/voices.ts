@@ -1,4 +1,6 @@
 import * as Tone from "tone";
+import { LeanFilter, SleepyOutput } from "./lean";
+import { LeanEnvelope, LeanTone, NoiseVoice, OneShotTone, type BasicWave, type ToneSpec } from "./lean-voices";
 import { presetDefinition, type SoundPresetDefinition } from "../domain/sound-presets";
 import type { DrumVoice, SoundPresetId, Step, TrackKind } from "../domain/types";
 
@@ -26,14 +28,23 @@ export const VOICE_LIMITS: Record<TrackKind, number> = {
   pad: 4,
 };
 
+export interface VoiceBankOptions {
+  /** Offline renders keep every voice connected; live banks sleep while silent. */
+  alwaysAwake?: boolean;
+}
+
+/** Margin after an envelope has fully released before a voice is disconnected. */
+const SLEEP_MARGIN_SECONDS = 0.15;
+
 export function createVoiceBank(
   track: TrackKind,
   preset: SoundPresetId,
   destination: Tone.ToneAudioNode,
+  options: VoiceBankOptions = {},
 ): VoiceBank {
   return track === "drums"
-    ? createDrumBank(preset, destination)
-    : createMelodicBank(track, preset, destination);
+    ? createDrumBank(preset, destination, options.alwaysAwake ?? false)
+    : createMelodicBank(track, preset, destination, options.alwaysAwake ?? false);
 }
 
 export function drumLayerGain(voiceCount: number): number {
@@ -60,70 +71,63 @@ export function maximumDryTailSeconds(definition: SoundPresetDefinition): number
   return definition.articulation.gate.long * (1 + definition.articulation.variation.gate) + definition.release;
 }
 
-function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode): VoiceBank {
+function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("drums", preset);
   const character = definition.drums;
   if (!character) throw new Error(`Drum-Preset ${preset} besitzt keinen Drum-Charakter`);
   const output = new Tone.Gain(definition.level).connect(destination);
-  const kickPitch = new Tone.MembraneSynth({
-    pitchDecay: character.kickPitchDecay,
-    octaves: character.kickOctaves,
-    oscillator: { type: definition.oscillator === "triangle" ? "triangle" : "sine" },
-    envelope: { attack: definition.attack, decay: definition.decay, sustain: 0.01, release: definition.release },
-  }).connect(output);
-  const kickSub = new Tone.MembraneSynth({
-    pitchDecay: character.kickPitchDecay * 1.35,
-    octaves: Math.max(2.4, character.kickOctaves * 0.48),
-    oscillator: { type: "sine" },
-    envelope: { attack: 0.001, decay: definition.decay * 1.2, sustain: 0.015, release: definition.release },
-  }).connect(output);
-  const kickClickFilter = new Tone.Filter({ type: "highpass", frequency: 3_800, Q: 0.45, rolloff: -12 }).connect(output);
-  const kickClick = new Tone.NoiseSynth({
-    noise: { type: "white" },
-    envelope: { attack: 0.001, decay: 0.012, sustain: 0, release: 0.008 },
-  }).connect(kickClickFilter);
+  const kickBus = new Tone.Gain(1);
+  // Tone.MembraneSynth: exponential attack, pitch falling from f·2^octaves to f.
+  const kickPitch = new OneShotTone({ kind: "basic", type: definition.oscillator === "triangle" ? "triangle" : "sine" }, {
+    pitch: { octaves: character.kickOctaves, pitchDecay: character.kickPitchDecay },
+    envelope: { attack: definition.attack, decay: definition.decay, sustain: 0.01, release: definition.release, attackCurve: "exponential" },
+  }).connect(kickBus);
+  const kickSub = new OneShotTone({ kind: "basic", type: "sine" }, {
+    pitch: { octaves: Math.max(2.4, character.kickOctaves * 0.48), pitchDecay: character.kickPitchDecay * 1.35 },
+    envelope: { attack: 0.001, decay: definition.decay * 1.2, sustain: 0.015, release: definition.release, attackCurve: "exponential" },
+  }).connect(kickBus);
+  const kickClickFilter = new LeanFilter({ type: "highpass", frequency: 3_800, Q: 0.45, rolloff: -12 }).connect(kickBus);
+  const kickClick = new NoiseVoice("white", { attack: 0.001, decay: 0.012, sustain: 0, release: 0.008 }).connect(kickClickFilter);
 
-  const snarePanner = new Tone.Panner(-0.04).connect(output);
-  const snareFilter = new Tone.Filter({ type: "bandpass", frequency: character.snareBandFrequency, Q: 0.72, rolloff: -12 }).connect(snarePanner);
-  const snareNoise = new Tone.NoiseSynth({
-    noise: { type: character.snareNoise },
-    envelope: { attack: 0.001, decay: 0.11 + definition.decay * 0.32, sustain: 0, release: definition.release * 0.55 },
+  const snarePanner = new Tone.Panner(-0.04);
+  const snareFilter = new LeanFilter({ type: "bandpass", frequency: character.snareBandFrequency, Q: 0.72, rolloff: -12 }).connect(snarePanner);
+  const snareNoise = new NoiseVoice(character.snareNoise === "pink" ? "pink" : "white", {
+    attack: 0.001, decay: 0.11 + definition.decay * 0.32, sustain: 0, release: definition.release * 0.55,
   }).connect(snareFilter);
-  const snareBody = new Tone.Synth({
-    oscillator: { type: "triangle" },
+  const snareBody = new OneShotTone({ kind: "basic", type: "triangle" }, {
     envelope: { attack: 0.001, decay: 0.09 + definition.decay * 0.18, sustain: 0, release: 0.05 },
   }).connect(snarePanner);
 
-  const clapPanner = new Tone.Panner(0.08).connect(output);
-  const clapFilter = new Tone.Filter({ type: "highpass", frequency: Math.max(1_100, character.snareBandFrequency * 0.72), Q: 0.5, rolloff: -12 }).connect(clapPanner);
-  const clapParts = Array.from({ length: 3 }, () => new Tone.NoiseSynth({
-    noise: { type: "white" },
-    envelope: { attack: 0.001, decay: character.clapTail, sustain: 0, release: character.clapTail * 0.7 },
+  const clapPanner = new Tone.Panner(0.08);
+  const clapFilter = new LeanFilter({ type: "highpass", frequency: Math.max(1_100, character.snareBandFrequency * 0.72), Q: 0.5, rolloff: -12 }).connect(clapPanner);
+  const clapParts = Array.from({ length: 3 }, () => new NoiseVoice("white", {
+    attack: 0.001, decay: character.clapTail, sustain: 0, release: character.clapTail * 0.7,
   }).connect(clapFilter));
 
-  const closedHatPanner = new Tone.Panner(-0.14).connect(output);
-  const openHatPanner = new Tone.Panner(0.16).connect(output);
-  const closedHat = makeHat(0.045 + definition.brightness * 0.025, definition).connect(closedHatPanner);
-  const openHat = makeHat((0.28 + definition.decay * 0.5) * character.openHatScale, definition).connect(openHatPanner);
-  const closedHatNoiseFilter = new Tone.Filter({ type: "highpass", frequency: character.hatNoiseCutoff, Q: 0.45, rolloff: -12 }).connect(closedHatPanner);
-  const openHatNoiseFilter = new Tone.Filter({ type: "highpass", frequency: character.hatNoiseCutoff, Q: 0.45, rolloff: -12 }).connect(openHatPanner);
-  const closedHatNoise = new Tone.NoiseSynth({
-    noise: { type: "white" },
-    envelope: { attack: 0.001, decay: 0.075, sustain: 0, release: 0.035 },
-  }).connect(closedHatNoiseFilter);
-  const openHatNoise = new Tone.NoiseSynth({
-    noise: { type: definition.brightness > 0.5 ? "white" : "pink" },
-    envelope: { attack: 0.001, decay: (0.32 + definition.decay * 0.3) * character.openHatScale, sustain: 0, release: 0.12 * character.openHatScale },
+  const closedHatPanner = new Tone.Panner(-0.14);
+  const openHatPanner = new Tone.Panner(0.16);
+  const closedHatNoiseFilter = new LeanFilter({ type: "highpass", frequency: character.hatNoiseCutoff, Q: 0.45, rolloff: -12 }).connect(closedHatPanner);
+  const openHatNoiseFilter = new LeanFilter({ type: "highpass", frequency: character.hatNoiseCutoff, Q: 0.45, rolloff: -12 }).connect(openHatPanner);
+  const closedHatNoise = new NoiseVoice("white", { attack: 0.001, decay: 0.075, sustain: 0, release: 0.035 }).connect(closedHatNoiseFilter);
+  const openHatNoise = new NoiseVoice(definition.brightness > 0.5 ? "white" : "pink", {
+    attack: 0.001, decay: (0.32 + definition.decay * 0.3) * character.openHatScale, sustain: 0, release: 0.12 * character.openHatScale,
   }).connect(openHatNoiseFilter);
 
-  const tomPanner = new Tone.Panner(0).connect(output);
-  const tom = new Tone.MembraneSynth({
-    pitchDecay: character.tomPitchDecay,
-    octaves: character.tomOctaves,
-    oscillator: { type: "triangle" },
-    envelope: { attack: 0.002, decay: 0.22 + definition.decay * 0.4, sustain: 0.02, release: 0.16 },
+  const tomPanner = new Tone.Panner(0);
+  const tom = new OneShotTone({ kind: "basic", type: "triangle" }, {
+    pitch: { octaves: character.tomOctaves, pitchDecay: character.tomPitchDecay },
+    envelope: { attack: 0.002, decay: 0.22 + definition.decay * 0.4, sustain: 0.02, release: 0.16, attackCurve: "exponential" },
   }).connect(tomPanner);
+  const groups = {
+    kick: new SleepyOutput(kickBus, output, alwaysAwake),
+    snare: new SleepyOutput(snarePanner, output, alwaysAwake),
+    clap: new SleepyOutput(clapPanner, output, alwaysAwake),
+    closedHat: new SleepyOutput(closedHatPanner, output, alwaysAwake),
+    openHat: new SleepyOutput(openHatPanner, output, alwaysAwake),
+    tom: new SleepyOutput(tomPanner, output, alwaysAwake),
+  } satisfies Record<DrumVoice, SleepyOutput>;
   const nodes: Tone.ToneAudioNode[] = [
+    kickBus,
     kickPitch,
     kickSub,
     kickClickFilter,
@@ -137,8 +141,6 @@ function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode):
     ...clapParts,
     closedHatPanner,
     openHatPanner,
-    closedHat,
-    openHat,
     closedHatNoiseFilter,
     openHatNoiseFilter,
     closedHatNoise,
@@ -151,6 +153,16 @@ function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode):
   const triggerVoice = (voice: DrumVoice, step: Step, time: number, velocity: number) => {
     const expression = clamp01(step.variation);
     const length = step.length === "short" ? 0.72 : step.length === "long" ? 1.35 : 1;
+    const clapSpread = 2 * character.clapSpacing * (0.88 + expression * 0.24);
+    const tails: Record<DrumVoice, number> = {
+      kick: 0.3 * length + definition.release,
+      snare: 0.24 * length + definition.release,
+      clap: clapSpread + (character.clapTail + 0.07) * length + character.clapTail * 0.7,
+      closedHat: 0.15 * length + 0.08,
+      openHat: (0.52 * length + 0.12) * character.openHatScale + (0.28 + definition.decay * 0.5) * character.openHatScale * 0.45,
+      tom: 0.38 * length + 0.16,
+    };
+    groups[voice].wake(time, time + tails[voice] + SLEEP_MARGIN_SECONDS);
     if (voice === "kick") {
       const tunedKick = Tone.Frequency(character.kickNote).toFrequency() * (1 + expression * 0.035);
       kickPitch.triggerAttackRelease(tunedKick, (0.12 + expression * 0.12) * length, time, velocity * 0.76);
@@ -167,17 +179,14 @@ function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode):
         velocity * (0.36 - index * 0.04),
       ));
     } else if (voice === "closedHat") {
-      openHat.triggerRelease(time);
       openHatNoise.triggerRelease(time);
-      closedHat.triggerAttackRelease((0.07 + expression * 0.08) * length, time, velocity * 0.46);
       closedHatNoise.triggerAttackRelease((0.06 + expression * 0.06) * length, time, velocity * 0.24);
     } else if (voice === "openHat") {
-      openHat.triggerAttackRelease((0.18 + expression * 0.34) * character.openHatScale * length, time, velocity * 0.3);
       openHatNoise.triggerAttackRelease((0.2 + expression * 0.32) * character.openHatScale * length, time, velocity * 0.2);
     } else {
       const noteIndex = expression > 0.66 ? 2 : expression > 0.33 ? 1 : 0;
       tomPanner.pan.setValueAtTime([-0.18, 0, 0.18][noteIndex] ?? 0, time);
-      tom.triggerAttackRelease(character.tomNotes[noteIndex], (0.16 + expression * 0.22) * length, time, velocity * 0.58);
+      tom.triggerAttackRelease(Tone.Frequency(character.tomNotes[noteIndex] ?? "C2").toFrequency(), (0.16 + expression * 0.22) * length, time, velocity * 0.58);
     }
   };
 
@@ -195,81 +204,71 @@ function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode):
       snareNoise.triggerRelease(time);
       snareBody.triggerRelease(time);
       clapParts.forEach((part) => part.triggerRelease(time));
-      closedHat.triggerRelease(time);
-      openHat.triggerRelease(time);
       closedHatNoise.triggerRelease(time);
       openHatNoise.triggerRelease(time);
       tom.triggerRelease(time);
     },
-    dispose: () => nodes.forEach((node) => node.dispose()),
-  };
-}
-
-function makeHat(decay: number, definition: SoundPresetDefinition): Tone.Synth {
-  const character = definition.drums;
-  if (!character) throw new Error(`Preset ${definition.id} besitzt keinen Drum-Charakter`);
-  const hat = new Tone.Synth({
-    oscillator: {
-      type: "fmsquare",
-      harmonicity: character.hatHarmonicity,
-      modulationIndex: 12 + definition.brightness * 7,
+    dispose: () => {
+      Object.values(groups).forEach((group) => group.dispose());
+      nodes.forEach((node) => node.dispose());
     },
-    envelope: { attack: 0.001, decay, sustain: 0, release: decay * 0.45 },
-  });
-  hat.frequency.value = character.hatFrequency;
-  hat.volume.value = -5;
-  return hat;
+  };
 }
 
 function createMelodicBank(
   track: Exclude<TrackKind, "drums">,
   preset: SoundPresetId,
   destination: Tone.ToneAudioNode,
+  alwaysAwake: boolean,
 ): VoiceBank {
   const definition = presetDefinition(track, preset);
   const character = definition.voice;
   if (!character) throw new Error(`Melodisches Preset ${preset} besitzt keinen Voice-Charakter`);
   const output = new Tone.Gain(definition.level).connect(destination);
+  const startAt = output.context.currentTime;
   const voices = Array.from({ length: VOICE_LIMITS[track] }, () => {
-    const oscillator = new Tone.OmniOscillator({ frequency: 440, ...melodicOscillator(definition) });
-    const filter = new Tone.Filter({
+    const oscillator = new LeanTone(output.context, melodicSpec(definition), 440, definition.detune).start(startAt);
+    const filter = new LeanFilter({
       type: "lowpass",
       frequency: character.filterBase,
       Q: character.filterQ,
       rolloff: character.filterRolloff,
     });
-    const envelope = new Tone.AmplitudeEnvelope({
+    const envelope = new LeanEnvelope({
       attack: definition.attack,
       decay: definition.decay,
       sustain: definition.sustain,
       release: definition.release,
     });
-    oscillator.chain(filter, envelope, output).start();
-    return { oscillator, filter, envelope, hasTriggered: false };
+    oscillator.output.connect(filter.input);
+    filter.connect(envelope);
+    return { oscillator, filter, envelope, hasTriggered: false, sleep: new SleepyOutput(envelope, output, alwaysAwake) };
   });
   const subVoices = track === "bass"
     ? Array.from({ length: VOICE_LIMITS[track] }, () => {
-        const oscillator = new Tone.OmniOscillator({ frequency: 55, type: "sine" });
-        const filter = new Tone.Filter({ type: "lowpass", frequency: 145, Q: 0.5, rolloff: -24 });
-        const envelope = new Tone.AmplitudeEnvelope({
+        const oscillator = new LeanTone(output.context, { kind: "basic", type: "sine" }, 55).start(startAt);
+        const filter = new LeanFilter({ type: "lowpass", frequency: 145, Q: 0.5, rolloff: -24 });
+        const envelope = new LeanEnvelope({
           attack: Math.max(0.004, definition.attack),
           decay: definition.decay,
           sustain: 0.58,
           release: definition.release,
         });
-        oscillator.chain(filter, envelope, output).start();
-        return { oscillator, filter, envelope, hasTriggered: false };
+        oscillator.output.connect(filter.input);
+        filter.connect(envelope);
+        return { oscillator, filter, envelope, hasTriggered: false, sleep: new SleepyOutput(envelope, output, alwaysAwake) };
       })
     : [];
   const transientFilter = definition.articulation.transientLevel >= 0.15
-    ? new Tone.Filter({ type: "highpass", frequency: track === "lead" ? 3_200 : 2_200, Q: 0.6, rolloff: -12 }).connect(output)
+    ? new LeanFilter({ type: "highpass", frequency: track === "lead" ? 3_200 : 2_200, Q: 0.6, rolloff: -12 })
     : null;
+  const transientSleep = transientFilter ? new SleepyOutput(transientFilter, output, alwaysAwake) : null;
   const transient = transientFilter
-    ? new Tone.NoiseSynth({ noise: { type: "pink" }, envelope: { attack: 0.001, decay: 0.018, sustain: 0, release: 0.012 } }).connect(transientFilter)
+    ? new NoiseVoice("pink", { attack: 0.001, decay: 0.018, sustain: 0, release: 0.012 }).connect(transientFilter)
     : null;
   const nodes: Tone.ToneAudioNode[] = [
-    ...voices.flatMap((voice) => [voice.oscillator, voice.filter, voice.envelope]),
-    ...subVoices.flatMap((voice) => [voice.oscillator, voice.filter, voice.envelope]),
+    ...voices.flatMap((voice) => [voice.filter, voice.envelope]),
+    ...subVoices.flatMap((voice) => [voice.filter, voice.envelope]),
     ...(transientFilter ? [transientFilter] : []),
     ...(transient ? [transient] : []),
     output,
@@ -300,14 +299,17 @@ function createMelodicBank(
           voice.oscillator.frequency.setValueAtTime(frequency, time);
         }
         voice.hasTriggered = true;
+        voice.sleep.wake(time, time + expression.gateSeconds + definition.release + SLEEP_MARGIN_SECONDS);
         voice.envelope.triggerAttackRelease(expression.gateSeconds, time, expression.velocity);
         const sub = subVoices[index];
         if (sub) {
+          sub.sleep.wake(time, time + expression.gateSeconds + definition.release + SLEEP_MARGIN_SECONDS);
           sub.oscillator.frequency.setValueAtTime(frequency, time);
           sub.envelope.triggerAttackRelease(expression.gateSeconds, time, expression.velocity * definition.articulation.subLevel);
           sub.hasTriggered = true;
         }
       });
+      transientSleep?.wake(time, time + 0.04 + SLEEP_MARGIN_SECONDS);
       transient?.triggerAttackRelease(0.02, time, expression.velocity * definition.articulation.transientLevel);
     },
     release: (time) => {
@@ -315,20 +317,27 @@ function createMelodicBank(
       subVoices.forEach((voice) => voice.envelope.triggerRelease(time));
       transient?.triggerRelease(time);
     },
-    dispose: () => nodes.forEach((node) => node.dispose()),
+    dispose: () => {
+      [...voices, ...subVoices].forEach((voice) => {
+        voice.sleep.dispose();
+        voice.oscillator.stop(output.context.currentTime);
+        voice.oscillator.dispose();
+      });
+      transientSleep?.dispose();
+      nodes.forEach((node) => node.dispose());
+    },
   };
 }
 
-function melodicOscillator(definition: SoundPresetDefinition) {
+/** The OmniOscillator settings of a melodic preset as a lean tone spec (FM modulators are square, as in Tone). */
+function melodicSpec(definition: SoundPresetDefinition): ToneSpec {
   const character = definition.voice;
-  if (!character) return { type: "sine" as const };
-  if (definition.oscillator === "fatsawtooth") {
-    return { type: "fatsawtooth" as const, count: character.fatCount, spread: character.fatSpread, detune: definition.detune };
-  }
+  if (!character) return { kind: "basic", type: "sine" };
+  if (definition.oscillator === "fatsawtooth") return { kind: "fat", type: "sawtooth", count: character.fatCount, spread: character.fatSpread };
   if (definition.oscillator === "fmsine") {
-    return { type: "fmsine" as const, harmonicity: character.harmonicity, modulationIndex: character.modulationIndex, detune: definition.detune };
+    return { kind: "fm", type: "sine", modulationType: "square", harmonicity: character.harmonicity, modulationIndex: character.modulationIndex };
   }
-  return { type: definition.oscillator, detune: definition.detune };
+  return { kind: "basic", type: definition.oscillator as BasicWave };
 }
 
 function toHz(midi: number): number {

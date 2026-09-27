@@ -152,3 +152,12 @@ function assertOfflineContract(metrics: Metrics, label: string): void {
 function relativeDifference(left: number, right: number, floor = 0.001): number {
   return Math.abs(left - right) / Math.max(Math.abs(left), Math.abs(right), floor);
 }
+
+test("bleibt mit dem ganzen Werkprojekt im Knotenbudget für knackfreie Wiedergabe", async ({ page }) => {
+  // Chromium spends about 1 ms of audio-thread time per native node and second.
+  // Tone's wrapper nodes pushed the engine to ~1,650 nodes and heavy underruns;
+  // the lean graph and voices keep it near 300 with no running ConstantSources.
+  const nodes = await page.evaluate(() => (window as unknown as { __grooveboxAudioLab: { countEngineNodes(): Promise<{ total: number; constantSources: number }> } }).__grooveboxAudioLab.countEngineNodes());
+  expect(nodes.total).toBeLessThanOrEqual(340);
+  expect(nodes.constantSources).toBeLessThanOrEqual(2);
+});

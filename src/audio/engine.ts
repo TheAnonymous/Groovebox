@@ -19,6 +19,7 @@ export interface AudioStatusEvent {
 export interface PlayheadEvent extends SequencerPosition {
   peak: number;
   trackPeaks: Record<TrackKind, number>;
+  chainNext: number | null;
 }
 
 export interface AudioEngine {
@@ -27,10 +28,23 @@ export interface AudioEngine {
   stop(): void;
   panic(): void;
   queueScene(scene: number): number | null;
+  setSceneChain(repeats: number | null): void;
   syncProject(project: ProjectV2): void;
   onPlayhead(listener: (position: PlayheadEvent) => void): () => void;
   onStatus(listener: (status: AudioStatusEvent) => void): () => void;
   dispose(): void;
+}
+
+export interface EngineOptions {
+  /** Renders inside Tone.Offline: no context-state checks, meters or draw callbacks. */
+  offline?: boolean;
+}
+
+/** What an offline render plays: the start scene, the chain setting and the number of sixteenth steps. */
+export interface RenderPlan {
+  startScene: number;
+  chainRepeats: number | null;
+  steps: number;
 }
 
 export class ToneAudioEngine implements AudioEngine {
@@ -48,7 +62,7 @@ export class ToneAudioEngine implements AudioEngine {
   private readonly playheadListeners = new Set<(position: PlayheadEvent) => void>();
   private readonly statusListeners = new Set<(status: AudioStatusEvent) => void>();
 
-  constructor(project: ProjectV2) {
+  constructor(project: ProjectV2, private readonly options: EngineOptions = {}) {
     this.project = structuredClone(project);
   }
 
@@ -109,6 +123,27 @@ export class ToneAudioEngine implements AudioEngine {
     return this.clock.queue(scene);
   }
 
+  setSceneChain(repeats: number | null): void {
+    this.clock.setChain(repeats);
+  }
+
+  /** Builds the full signal path in the current (offline) context and schedules `plan` on its transport. */
+  async scheduleOffline(plan: RenderPlan): Promise<void> {
+    if (!this.options.offline) throw new Error("scheduleOffline braucht eine Offline-Engine");
+    await this.createGraph();
+    const transport = Tone.getTransport();
+    transport.bpm.value = this.project.tempo;
+    this.clock.setChain(plan.chainRepeats);
+    this.clock.start(plan.startScene);
+    this.applyProject();
+    let remaining = plan.steps;
+    transport.scheduleRepeat((time) => {
+      if (remaining <= 0) return;
+      remaining -= 1;
+      this.tick(time);
+    }, "16n", 0);
+  }
+
   syncProject(project: ProjectV2): void {
     this.project = structuredClone(project);
     if (this.initialized) {
@@ -147,7 +182,7 @@ export class ToneAudioEngine implements AudioEngine {
     if (this.strips !== strips || this.master !== master) throw new Error("Audio-Vorbereitung wurde abgebrochen");
     this.prepareSelectedVoiceBanks();
     this.initialized = true;
-    this.monitorMeters();
+    if (!this.options.offline) this.monitorMeters();
     this.applyProject();
   }
 
@@ -180,7 +215,7 @@ export class ToneAudioEngine implements AudioEngine {
   }
 
   private tick(time: number): void {
-    if (Tone.getContext().state !== "running") {
+    if (!this.options.offline && Tone.getContext().state !== "running") {
       this.emitStatus("suspended", "Audio wurde vom Browser pausiert – Start erneut anklicken");
       return;
     }
@@ -194,8 +229,9 @@ export class ToneAudioEngine implements AudioEngine {
         this.emitStatus("error", `${track}: ${message}`);
       }
     }
+    if (this.options.offline) return;
     Tone.getDraw().schedule(() => {
-      const event = { ...position, peak: this.measuredPeak, trackPeaks: { ...this.measuredTrackPeaks } };
+      const event = { ...position, peak: this.measuredPeak, trackPeaks: { ...this.measuredTrackPeaks }, chainNext: this.clock.chainNext };
       for (const listener of this.playheadListeners) listener(event);
     }, time);
   }
@@ -226,7 +262,7 @@ export class ToneAudioEngine implements AudioEngine {
     if (this.voiceBanks.size >= MAX_VOICE_BANKS) throw new Error("Maximale Zahl der Klangbänke erreicht");
     const strip = this.strips?.[track];
     if (!strip) throw new Error("Audio-Signalweg ist nicht initialisiert");
-    const bank = createVoiceBank(track, preset, strip.input);
+    const bank = createVoiceBank(track, preset, strip.input, { alwaysAwake: this.options.offline ?? false });
     this.voiceBanks.set(key, bank);
     return bank;
   }

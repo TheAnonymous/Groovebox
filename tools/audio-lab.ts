@@ -1,5 +1,7 @@
 import * as Tone from "tone";
 import { LAB_MACROS, renderFactoryMix, renderPresetPhrase, type DrumAudition, type OfflineRender } from "../src/audio/offline";
+import { ToneAudioEngine } from "../src/audio/engine";
+import { createFactoryProject } from "../src/domain/defaults";
 import { SOUND_PRESET_DEFINITIONS } from "../src/domain/sound-presets";
 import type { SoundPresetId, TrackKind } from "../src/domain/types";
 import { TRACK_KINDS } from "../src/domain/types";
@@ -138,5 +140,26 @@ Object.assign(window, {
       return metrics;
     },
     renderMix: async () => (await renderFactoryMix()).metrics,
+    /** Native nodes the full engine creates for the factory project (all voices awake, as in an export). */
+    countEngineNodes: async () => {
+      const native = new OfflineAudioContext(2, 44_100, 44_100);
+      const counts: Record<string, number> = {};
+      for (const key of Object.getOwnPropertyNames(BaseAudioContext.prototype)) {
+        if (!key.startsWith("create") || key === "createBuffer" || key === "createPeriodicWave") continue;
+        const create = (native as unknown as Record<string, (...args: unknown[]) => unknown>)[key]!.bind(native);
+        (native as unknown as Record<string, unknown>)[key] = (...args: unknown[]) => {
+          counts[key] = (counts[key] ?? 0) + 1;
+          return create(...args);
+        };
+      }
+      const original = Tone.getContext();
+      Tone.setContext(new Tone.OfflineContext(native as never));
+      try {
+        await new ToneAudioEngine(createFactoryProject(), { offline: true }).scheduleOffline({ startScene: 0, chainRepeats: null, steps: 0 });
+      } finally {
+        Tone.setContext(original);
+      }
+      return { total: Object.values(counts).reduce((sum, count) => sum + count, 0), constantSources: counts.createConstantSource ?? 0 };
+    },
   },
 });

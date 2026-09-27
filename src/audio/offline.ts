@@ -51,7 +51,7 @@ export async function renderPresetPhrase(
     const graph = createTrackGraph(track, master.input);
     graph.channelFader.gain.value = 0.78;
     applyTrackMacros(graph, track, preset, macros, 0);
-    const bank = createVoiceBank(track, preset, graph.input);
+    const bank = createVoiceBank(track, preset, graph.input, { alwaysAwake: true });
     await graph.ready;
     lastEventTime = schedulePresetPhrase(bank, track, drumAudition, (time, trigger) => {
       transport.schedule((renderTime) => trigger(renderTime), time);
@@ -80,7 +80,7 @@ export async function renderFactoryMix(): Promise<OfflineRender> {
       graph.channelFader.gain.value = gains[track];
       applyTrackMacros(graph, track, project.soundPresets[track], project.scenes[0]!.tracks.find((entry) => entry.instrument === track)!.macros, 0);
       graphs[track] = graph;
-      banks[track] = createVoiceBank(track, project.soundPresets[track], graph.input);
+      banks[track] = createVoiceBank(track, project.soundPresets[track], graph.input, { alwaysAwake: true });
     }
     await Promise.all(Object.values(graphs).map((graph) => graph.ready));
     project.scenes.forEach((scene, sceneIndex) => {

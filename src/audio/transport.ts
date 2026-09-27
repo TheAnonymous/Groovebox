@@ -3,19 +3,32 @@ export interface SequencerPosition {
   bar: number;
   step: number;
   switched: boolean;
+  /** Completed passes through the running scene since it started (0 during the first pass). */
+  pass: number;
 }
 
+const SCENES = 4;
+const STEPS_PER_PASS = 64;
+
+/**
+ * Sixteenth-note clock over four scenes of four bars. A queued scene starts at
+ * the next bar line. With a scene chain every scene plays `repeats` passes and
+ * then hands over to the next one (Auftakt → Fahrt → Höhepunkt → Ausklang → …).
+ */
 export class BarQueuedTransport {
   private scene = 0;
   private position = 0;
   private queued: number | null = null;
   private hasTicked = false;
+  private passes = 0;
+  private chainRepeats: number | null = null;
 
   start(scene: number): void {
     this.scene = clampScene(scene);
     this.position = 0;
     this.queued = null;
     this.hasTicked = false;
+    this.passes = 0;
   }
 
   queue(scene: number): number | null {
@@ -24,18 +37,31 @@ export class BarQueuedTransport {
     return this.queued;
   }
 
+  /** `null` switches the chain off; otherwise every scene plays this many passes. */
+  setChain(repeats: number | null): void {
+    this.chainRepeats = repeats === null ? null : Math.max(1, Math.round(repeats));
+  }
+
   reset(): void {
     this.position = 0;
     this.queued = null;
     this.hasTicked = false;
+    this.passes = 0;
   }
 
   next(): SequencerPosition {
     let switched = false;
+    if (this.hasTicked && this.position === 0) {
+      this.passes += 1;
+      if (this.chainRepeats !== null && this.queued === null && this.passes >= this.chainRepeats) {
+        this.queued = (this.scene + 1) % SCENES;
+      }
+    }
     if (this.hasTicked && this.position % 16 === 0 && this.queued !== null) {
       this.scene = this.queued;
       this.queued = null;
       this.position = 0;
+      this.passes = 0;
       switched = true;
     }
     const result = {
@@ -43,8 +69,9 @@ export class BarQueuedTransport {
       bar: Math.floor(this.position / 16),
       step: this.position % 16,
       switched,
+      pass: this.passes,
     };
-    this.position = (this.position + 1) % 64;
+    this.position = (this.position + 1) % STEPS_PER_PASS;
     this.hasTicked = true;
     return result;
   }
@@ -55,6 +82,11 @@ export class BarQueuedTransport {
 
   get queuedScene(): number | null {
     return this.queued;
+  }
+
+  /** The scene the chain moves to after the running one, or `null` without a chain. */
+  get chainNext(): number | null {
+    return this.chainRepeats === null ? null : (this.scene + 1) % SCENES;
   }
 }
 
