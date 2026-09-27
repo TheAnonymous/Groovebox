@@ -747,7 +747,9 @@ export class GrooveboxApp {
     try {
       this.flushAutosave();
       const project = structuredClone(this.store.getState().project);
-      const buffer = await renderProject(project, mode);
+      const buffer = await renderProject(project, mode, (fraction) => {
+        if (status) status.textContent = `Wird gerendert … ${Math.round(fraction * 100)} % von etwa ${estimate} Sekunden. Du kannst das Fenster dabei offen lassen.`;
+      });
       const musicFrames = Math.round(planSeconds(project, renderPlan(project, mode)) * buffer.sampleRate);
       const wav = encodeWav(buffer, trimmedLength(buffer, musicFrames));
       const suffix = mode.kind === "arc" ? "bogen" : fileSlug(project.scenes[mode.scene]?.name ?? "szene");

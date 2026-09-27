@@ -67,8 +67,11 @@ export function projectFileName(name: string): string {
 export function fileSlug(name: string, fallback = "groovebox"): string {
   const slug = cleanName(name)
     .toLowerCase()
-    .normalize("NFKD")
+    .replace(/ä/g, "ae")
+    .replace(/ö/g, "oe")
+    .replace(/ü/g, "ue")
     .replace(/ß/g, "ss")
+    .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");

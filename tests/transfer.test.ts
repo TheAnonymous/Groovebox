@@ -36,7 +36,7 @@ describe("Projektdateien", () => {
   });
 
   it("bildet sichere Dateinamen", () => {
-    expect(projectFileName("Größe & Straße!")).toBe("grosse-strasse.groovebox.json");
+    expect(projectFileName("Größe & Straße!")).toBe("groesse-strasse.groovebox.json");
     expect(projectFileName("   ")).toBe("unbenanntes-set.groovebox.json");
   });
 });
