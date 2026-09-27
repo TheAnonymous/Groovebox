@@ -892,6 +892,9 @@ kbd {
   .gb-small-screen .gb-small-screen__hint { color: var(--gb-ink); }
   .gb-small-screen .gb-small-screen__shared { padding: 0.7rem 0.8rem; border-left: 3px solid var(--gb-cyan); background: var(--gb-cyan-soft); color: var(--gb-ink); }
   .gb-small-screen__shared[hidden] { display: none; }
+  .gb-small-screen__demo { display: grid; gap: 0.4rem; margin: 0.2rem 0 0; }
+  .gb-small-screen__demo figcaption { color: var(--gb-muted); font-size: 0.8rem; letter-spacing: 0.04em; }
+  .gb-small-screen__demo audio { width: 100%; }
   .gb-small-screen__actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.4rem; }
   .gb-small-screen__feedback:empty { display: none; }
   .gb-small-screen__feedback { overflow-wrap: anywhere; font-size: 0.85rem; }
