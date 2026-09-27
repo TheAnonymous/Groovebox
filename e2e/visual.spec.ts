@@ -37,7 +37,13 @@ test("Playhead, Warteschlange und Dialog", async ({ page }) => {
   await expect(page).toHaveScreenshot("performance-dialog.png", { animations: "disabled", fullPage: true });
 });
 
-test("zu kleine Arbeitsfläche", async ({ page }) => {
-  await page.setViewportSize({ width: 900, height: 700 });
-  await expect(page).toHaveScreenshot("small-viewport.png", { animations: "disabled" });
+test("Laptop 1366 × 657", async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 657 });
+  await expect(page).toHaveScreenshot("laptop-1366.png", { animations: "disabled" });
+});
+
+test("Handy-Seite", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(".gb-small-screen__art").evaluate((image: HTMLImageElement) => image.decode());
+  await expect(page).toHaveScreenshot("phone.png", { animations: "disabled" });
 });

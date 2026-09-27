@@ -8,12 +8,12 @@ Snare, Clap, Closed/Open Hat und Tom werden lokal mit Tone.js synthetisiert.
 **Live:** https://musik.jodie-oesterling.de/Groovebox/ (Teil der
 [Musik-Werkstatt](https://musik.jodie-oesterling.de/))
 
-![Groovebox · Synthwave Sequencer](public/assets/promo/groovebox-banner-v2.png)
+![Groovebox · Synthwave Sequencer](docs/assets/promo/groovebox-banner-v2.png)
 
-Weitere Motive stehen als [quadratisches Artwork](public/assets/promo/groovebox-square-v2.png),
-[Hochformat](public/assets/promo/groovebox-portrait-v2.png) und
+Weitere Motive stehen als [quadratisches Artwork](docs/assets/promo/groovebox-square-v2.png),
+[Hochformat](docs/assets/promo/groovebox-portrait-v2.png) und
 [Social-Preview](public/assets/social/groovebox-preview.png) bereit. Der
-[Preset-Atlas](public/assets/promo/preset-atlas-v3.png) zeigt zusätzlich alle 15
+[Preset-Atlas](docs/assets/promo/preset-atlas-v3.png) zeigt zusätzlich alle 15
 Klangfarben. Szenen-, Instrument- und Presetgrafiken werden direkt in der
 Anwendung verwendet.
 

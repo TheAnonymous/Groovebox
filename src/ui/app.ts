@@ -153,11 +153,6 @@ export class GrooveboxApp {
     const isPlaying = state.transport.status === "playing";
 
     this.root.innerHTML = `
-      <div class="gb-small-screen" role="status">
-        <span class="gb-small-screen__mark" aria-hidden="true">GB</span>
-        <h1>Groovebox braucht etwas Platz.</h1>
-        <p>Öffne die Anwendung auf einem Desktop-Fenster ab 1024 × 720 Pixeln, damit alle 64 Steps zuverlässig bedienbar bleiben.</p>
-      </div>
       <div class="gb-app-shell">
         ${this.header(state, isPlaying)}
         <main class="gb-main">
@@ -227,6 +222,7 @@ export class GrooveboxApp {
     const saveLabel = state.autosave === "saving" ? "Speichert …" : state.autosave === "error" ? "Speicherfehler" : "Lokal gespeichert";
     return `<header class="bu-header gb-header">
       <div class="bu-header__inner gb-header__inner">
+        <a class="gb-home-link" href="/" aria-label="Zurück zur Musik-Werkstatt" title="Zurück zur Musik-Werkstatt"><span aria-hidden="true">←</span><span class="gb-home-link__label" aria-hidden="true">Musik-Werkstatt</span></a>
         <div class="gb-brand" aria-label="Groovebox">
           <span class="gb-brand__index">GB–01</span>
           <span class="gb-brand__name">GROOVEBOX</span>

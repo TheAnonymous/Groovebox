@@ -288,8 +288,21 @@ test("fängt beschädigte gespeicherte Daten verständlich ab", async ({ page })
   await expect(page.locator(".bu-toast")).toContainText("Werkprojekt", { timeout: 2_000 });
 });
 
-test("zeigt unterhalb der Mindestfläche einen Desktop-Hinweis", async ({ page }) => {
-  await page.setViewportSize({ width: 900, height: 700 });
-  await expect(page.getByRole("heading", { name: "Groovebox braucht etwas Platz." })).toBeVisible();
-  await expect(page.locator(".gb-app-shell")).toBeHidden();
+test("zeigt unterhalb der Mindestbreite eine Handy-Seite mit Rückweg", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("heading", { name: "Groovebox", exact: true })).toBeVisible();
+  await expect(page.locator("#app")).toBeHidden();
+  await expect(page.getByRole("link", { name: "Zur Musik-Werkstatt" })).toHaveAttribute("href", "/");
+  await expect(page.getByRole("button", { name: "Link für später merken" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test("bleibt auf Laptops mit wenig Höhe vollständig bedienbar", async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 657 });
+  await expect(page.locator(".gb-app-shell")).toBeVisible();
+  await expect(page.locator(".gb-small-screen")).toBeHidden();
+  await expect(page.getByRole("link", { name: /Musik-Werkstatt/ })).toHaveAttribute("href", "/");
+  await expect(page.getByRole("button", { name: "Wiedergabe starten" })).toBeInViewport();
+  await page.locator('.gb-step[data-bar="3"][data-step="15"]').scrollIntoViewIfNeeded();
+  await expect(page.getByRole("button", { name: "Wiedergabe starten" })).toBeInViewport();
 });
