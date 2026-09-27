@@ -36,6 +36,15 @@ Bandenergie, Stereokorrelation und Ausklingzeit an; das Lab selbst exportiert
 nichts. `npm run render:demo` rendert die Hörprobe der Handy-Seite und der
 Musik-Werkstatt über den WAV-Export der App neu (braucht ffmpeg).
 
+Die Audio-Engine baut Filter, EQ, Chorus, Hall und die Stimmen der Tone.js-
+Instrumente exakt aus nativen Web-Audio-Knoten nach (rund 300 statt 1.650
+Knoten), damit Chromium ohne Aussetzer spielt; ein Audiovertrag hält dieses
+Budget. Eine Hörentscheidung ist dabei offen: Die alte Engine legte unter die
+Hi-Hats eine FM-Schicht, die mit vertauschten Argumenten ausgelöst wurde
+(0,1-Hz-Note, Klick vor dem Schlag) und praktisch nicht hörbar war. Sie ist
+entfallen, damit sich der hörbare Klang nicht ändert; soll sie als echte
+Metall-Schicht zurückkommen, ist das eine bewusste Klangentscheidung.
+
 Die App benötigt keine Konten, kein Backend und lädt zur Laufzeit keine
 Ressourcen von fremden Origins. Bis zu acht benannte Projekte liegen im
 `localStorage` des aktuellen Browserprofils (Katalog `groovebox.projects.v1`,
