@@ -5,7 +5,8 @@ Einsteiger. Vier Szenen, fünf Instrumente und ein 4×16-Step-Sequencer laufen
 direkt im Browser. Drei kuratierte Klangfarben je Instrument sowie Kick,
 Snare, Clap, Closed/Open Hat und Tom werden lokal mit Tone.js synthetisiert.
 
-**Live:** https://theanonymous.github.io/Groovebox/
+**Live:** https://musik.jodie-oesterling.de/Groovebox/ (Teil der
+[Musik-Werkstatt](https://musik.jodie-oesterling.de/))
 
 ![Groovebox · Synthwave Sequencer](public/assets/promo/groovebox-banner-v2.png)
 
@@ -18,17 +19,17 @@ Anwendung verwendet.
 
 ## Entwicklung
 
+Die Toolchain ist über [`mise.toml`](mise.toml) festgelegt (Node.js 24.15.0,
+npm 12.0.0); `mise install` richtet sie ein.
+
 ```bash
-npm install
+npm ci
 npm run dev
-npm test
-npm run build
-npm run test:e2e
-npm run test:audio
+npm run verify   # Unit-Tests, Build, E2E (Chromium + Firefox), Audio-Verträge
 ```
 
 Für die lokale Hörabnahme startet `npm run audio:lab` das nicht im
-GitHub-Pages-Build enthaltene Sound-Lab ausschließlich auf
+Produktionsbuild enthaltene Sound-Lab ausschließlich auf
 `http://127.0.0.1:4174/audio-lab.html`. Es rendert den Produktionssignalweg
 offline, bietet A/B-Hörpegelabgleich und zeigt Peak, RMS, Crest-Faktor,
 Bandenergie, Stereokorrelation und Ausklingzeit an; einen Audioexport gibt es
@@ -52,8 +53,14 @@ Unterstützt wird eine Desktop-Fläche ab 1024×720 Pixeln.
 Die vendorte BraunUi-Version und ihre Lizenzen sind in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) dokumentiert.
 
-Jeder Push auf `main` wird nach erfolgreichen Unit-Tests automatisch über
-GitHub Pages veröffentlicht.
+## Veröffentlichung
+
+Groovebox läuft unter `/Groovebox/` auf dem eigenen Server. Veröffentlicht wird
+nur ein Commit auf `main`: `scripts/musik-build.sh` im Repository
+`server-infra-nixos` exportiert ihn per `git archive`, führt `npm run verify`
+aus und baut zusammen mit Kitty und der Übersichtsseite ein Release;
+`scripts/musik-deploy.sh` schaltet es atomar um und prüft jede Datei über HTTPS,
+`scripts/musik-rollback.sh` kehrt zum vorherigen Release zurück.
 
 <!-- github-cicd-policy -->
 ## Local validation policy

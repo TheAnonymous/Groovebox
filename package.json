@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:audio": "playwright test --config playwright.audio.config.ts",
-    "test:all": "npm test && npm run build && npm run test:e2e && npm run test:audio"
+    "test:all": "npm run verify",
+    "verify": "npm test && npm run build && npm run test:e2e -- --project=chromium --project=firefox && npm run test:audio"
   },
   "dependencies": {
     "tone": "15.5.27"

@@ -37,7 +37,7 @@ test("zeigt das vollständige Desktop-Instrument ohne Laufzeitfehler", async ({ 
   expect(presetArt).toHaveLength(3);
   expect(presetArt.every((image) => image.includes("/assets/presets/drums-") && image.endsWith('.webp\")'))).toBe(true);
   await expect.poll(() => page.locator(".gb-section-heading").evaluate((element) => getComputedStyle(element, "::before").backgroundImage)).toContain("/assets/promo/performance-wide.webp");
-  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://theanonymous.github.io/Groovebox/assets/social/groovebox-preview.png");
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute("content", "https://musik.jodie-oesterling.de/Groovebox/assets/social/groovebox-preview.png");
   expect(errors).toEqual([]);
   expect(externalRequests).toEqual([]);
 });
