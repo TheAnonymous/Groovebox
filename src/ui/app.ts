@@ -1,13 +1,13 @@
 import type { AudioEngine } from "../audio/engine";
 import { chordLabel, currentRole, DEGREE_LABELS, KEY_LABELS, roleOptions, SCALE_LABELS } from "../domain/music";
 import { SOUND_PRESET_DEFINITIONS } from "../domain/sound-presets";
-import { createFactoryProject } from "../domain/defaults";
 import type {
   Action,
 } from "../store/store";
 import { canAddDrumVoice, GrooveboxStore, selectedPattern, selectedStep } from "../store/store";
 import type {
   AppState,
+  ProjectV2,
   ChordColor,
   DrumVoice,
   GrooveIntent,
@@ -32,7 +32,8 @@ import {
   TRACK_KINDS,
   VARIATION_AMOUNTS,
 } from "../domain/types";
-import type { ProjectRepository } from "../storage";
+import { MAX_PROJECTS, type ProjectCatalog } from "../catalog";
+import { nameFromFileName, parseProjectFile, projectFileName, serializeProjectFile } from "../transfer";
 import type { BramsAdapter } from "./brams";
 
 const ICON_SPRITE = `${import.meta.env.BASE_URL}vendor/braun-ui/icons.svg`;
@@ -103,7 +104,7 @@ export class GrooveboxApp {
     private readonly root: HTMLElement,
     private readonly store: GrooveboxStore,
     private readonly audio: AudioEngine,
-    private readonly repository: ProjectRepository,
+    private readonly catalog: ProjectCatalog,
     private readonly brams: BramsAdapter,
   ) {}
 
@@ -113,6 +114,15 @@ export class GrooveboxApp {
     this.root.addEventListener("keydown", (event) => this.handleGridKeys(event));
     window.addEventListener("keydown", (event) => this.handleGlobalKeys(event));
     window.addEventListener("beforeunload", () => this.audio.dispose(), { once: true });
+    window.addEventListener("dragover", (event) => {
+      if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+    });
+    window.addEventListener("drop", (event) => {
+      const file = event.dataTransfer?.files[0];
+      if (!file) return;
+      event.preventDefault();
+      void this.importFile(file);
+    });
 
     this.store.subscribe((state, action) => this.handleStateChange(state, action));
     this.audio.onStatus(({ status, message }) => {
@@ -206,7 +216,7 @@ export class GrooveboxApp {
               ${this.soundInspector(state)}
             </aside>
           </div>
-          <p class="gb-local-note"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#info"></use></svg> Dein Projekt wird ausschließlich in diesem Browserprofil gespeichert. Es gibt in Version 2 keinen Datei- oder Audioexport.</p>
+          <p class="gb-local-note"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#info"></use></svg> Deine Projekte liegen nur in diesem Browser. Wichtige Sets sicherst du unter <strong>Projekte → Als Datei sichern</strong>; eine Projektdatei kannst du auch einfach ins Fenster ziehen.</p>
         </main>
         ${this.dialogs(state)}
       </div>
@@ -241,7 +251,7 @@ export class GrooveboxApp {
         <div class="gb-header-actions">
           <button class="bu-button bu-button--sm" type="button" data-action="undo" ${state.canUndo ? "" : "disabled"} title="Letzte musikalische Änderung rückgängig machen (Strg+Z)">↶</button>
           <button class="bu-button bu-button--sm" type="button" data-action="redo" ${state.canRedo ? "" : "disabled"} title="Änderung wiederholen (Strg+Umschalt+Z)">↷</button>
-          <button class="bu-button bu-button--sm" type="button" data-action="new-project">Neues Projekt</button>
+          <button class="bu-button bu-button--sm gb-project-button" type="button" data-action="open-projects" data-focus-key="projects" aria-label="Projekte verwalten, geöffnet: ${escapeHtml(this.catalog.active.name)}" title="Projekte: neu, duplizieren, als Datei sichern oder öffnen"><span class="gb-project-button__name">${escapeHtml(this.catalog.active.name)}</span><span aria-hidden="true">▾</span></button>
         </div>
       </div>
     </header>`;
@@ -367,9 +377,40 @@ export class GrooveboxApp {
 
   private dialogs(state: AppState): string {
     const chord = state.project.scenes[state.ui.selectedScene]!.chords[this.editingChordBar]!;
-    return `<div id="new-project-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="new-project-title"><div class="bu-dialog__header"><div><h2 id="new-project-title" class="bu-dialog__title">Neues Projekt beginnen?</h2><p class="bu-dialog__description">Das aktuelle Projekt wird durch die vier Werksszenen ersetzt.</p></div><button class="bu-icon-button" type="button" data-bu-close aria-label="Dialog schließen"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#close"></use></svg></button></div><div class="bu-dialog__body"><p>Die letzte gültige Version bleibt bis zum nächsten Speichern als Sicherung erhalten. Ein Datei-Export ist in Version 2 nicht verfügbar.</p></div><div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Abbrechen</button><button class="bu-button bu-button--danger" type="button" data-action="confirm-new">Werkprojekt laden</button></div></section></div>
+    return `${this.projectDialogs()}
       <div id="chord-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="chord-title"><div class="bu-dialog__header"><div><h2 id="chord-title" class="bu-dialog__title">Akkord · Takt ${this.editingChordBar + 1}</h2><p class="bu-dialog__description">Alle Varianten bleiben sicher in ${KEY_LABELS[state.project.key]} ${SCALE_LABELS[state.project.scale]}.</p></div><button class="bu-icon-button" type="button" data-bu-close aria-label="Dialog schließen"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#close"></use></svg></button></div><div class="bu-dialog__body gb-dialog-fields"><label class="bu-field"><span class="bu-field__label">Stufe</span><select class="bu-select" id="chord-degree">${DEGREE_LABELS.map((label, index) => option(String(index + 1), label, String(chord.degree))).join("")}</select></label><label class="bu-field"><span class="bu-field__label">Farbe</span><select class="bu-select" id="chord-color">${CHORD_COLORS.map((color) => option(color, COLOR_LABELS[color], chord.color)).join("")}</select></label><label class="bu-field"><span class="bu-field__label">Lage</span><select class="bu-select" id="chord-inversion">${[-1, 0, 1].map((value) => option(String(value), value === -1 ? "Tief" : value === 1 ? "Hoch" : "Mitte", String(chord.inversion))).join("")}</select></label></div><div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Abbrechen</button><button class="bu-button bu-button--primary" type="button" data-action="save-chord">Akkord übernehmen</button></div></section></div>
       <div class="bu-toast-region" data-bu-toast-region aria-live="polite" aria-atomic="false"></div>`;
+  }
+
+  private projectDialogs(): string {
+    const close = `<button class="bu-icon-button" type="button" data-bu-close aria-label="Dialog schließen"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#close"></use></svg></button>`;
+    const full = this.catalog.isFull;
+    const fullHint = full ? `<p class="gb-inline-note">Alle ${MAX_PROJECTS} Plätze sind belegt. Lösche zuerst ein Projekt, um ein neues anzulegen oder zu öffnen.</p>` : "";
+    return `<div id="projects-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog gb-projects-dialog" role="dialog" aria-modal="true" aria-labelledby="projects-title"><div class="bu-dialog__header"><div><h2 id="projects-title" class="bu-dialog__title">Projekte</h2><p class="bu-dialog__description">${this.catalog.projects.length} von ${MAX_PROJECTS} Plätzen belegt · alles bleibt in diesem Browser</p></div>${close}</div>
+        <div class="bu-dialog__body gb-projects-body">
+          <ul class="gb-project-list" data-project-list>${this.projectListItems()}</ul>
+          <div class="gb-project-rename"><label class="bu-field"><span class="bu-field__label">Name des geöffneten Projekts</span><input class="bu-input" id="project-name-input" maxlength="40" value="${escapeHtml(this.catalog.active.name)}"></label><button class="bu-button" type="button" data-action="rename-project">Umbenennen</button></div>
+          ${fullHint}
+          <div class="gb-project-actions">
+            <button class="bu-button" type="button" data-action="new-project" ${full ? "disabled" : ""}>Neues Set</button>
+            <button class="bu-button" type="button" data-action="duplicate-project" ${full ? "disabled" : ""}>Duplizieren</button>
+            <button class="bu-button" type="button" data-action="export-project">Als Datei sichern</button>
+            <button class="bu-button" type="button" data-action="import-project" ${full ? "disabled" : ""}>Datei öffnen …</button>
+            <input type="file" accept=".json,application/json" data-import-input hidden>
+          </div>
+        </div>
+        <div class="bu-dialog__footer"><button class="bu-button bu-button--danger" type="button" data-action="delete-project" ${this.catalog.projects.length <= 1 ? "disabled" : ""}>Löschen …</button><button class="bu-button bu-button--primary" type="button" data-bu-close>Fertig</button></div>
+      </section></div>
+      <div id="new-project-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="new-project-title"><div class="bu-dialog__header"><div><h2 id="new-project-title" class="bu-dialog__title">Neues Set</h2><p class="bu-dialog__description">Startet mit den vier Werksszenen. Deine anderen Projekte bleiben unverändert.</p></div>${close}</div><div class="bu-dialog__body"><label class="bu-field"><span class="bu-field__label">Name</span><input class="bu-input" id="new-project-name" maxlength="40" value="Neues Set"></label></div><div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Abbrechen</button><button class="bu-button bu-button--primary" type="button" data-action="confirm-new">Set anlegen</button></div></section></div>
+      <div id="delete-project-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-project-title"><div class="bu-dialog__header"><div><h2 id="delete-project-title" class="bu-dialog__title">Projekt löschen?</h2><p class="bu-dialog__description">„${escapeHtml(this.catalog.active.name)}“ und seine Sicherung werden aus diesem Browser entfernt.</p></div>${close}</div><div class="bu-dialog__body"><p>Sichere es vorher als Datei, wenn du es später noch brauchst.</p></div><div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Behalten</button><button class="bu-button bu-button--danger" type="button" data-action="confirm-delete">Endgültig löschen</button></div></section></div>`;
+  }
+
+  private projectListItems(): string {
+    return this.catalog.projects.map((project) => {
+      const active = project.id === this.catalog.active.id;
+      const updated = new Date(project.updatedAt).toLocaleString("de-DE", { dateStyle: "medium", timeStyle: "short" });
+      return `<li><button type="button" class="gb-project-item ${active ? "is-active" : ""}" data-action="switch-project" data-id="${escapeHtml(project.id)}" aria-current="${active ? "true" : "false"}"><strong>${escapeHtml(project.name)}</strong><span>${active ? "geöffnet · " : ""}${escapeHtml(updated)}</span></button></li>`;
+    }).join("");
   }
 
   private handleStateChange(state: AppState, action: Action): void {
@@ -429,8 +470,9 @@ export class GrooveboxApp {
   private scheduleAutosave(): void {
     if (this.autosaveTimer !== null) window.clearTimeout(this.autosaveTimer);
     this.autosaveTimer = window.setTimeout(() => {
+      this.autosaveTimer = null;
       try {
-        this.repository.save(this.store.getState().project);
+        this.catalog.saveActive(this.store.getState().project);
         this.store.dispatch({ type: "autosave/status", status: "saved" });
       } catch {
         this.store.dispatch({ type: "autosave/status", status: "error" });
@@ -458,14 +500,28 @@ export class GrooveboxApp {
     else if (action === "variation-amount") this.store.dispatch({ type: "ui/variation-amount", amount: button.dataset.value as VariationAmount });
     else if (action === "vary") this.store.dispatch({ type: "track/vary" });
     else if (action === "randomize") this.store.dispatch({ type: "track/randomize" });
+    else if (action === "open-projects") this.openProjects();
+    else if (action === "switch-project") this.switchProject(button.dataset.id ?? "");
     else if (action === "new-project") this.brams.open("#new-project-dialog");
     else if (action === "confirm-new") this.confirmNewProject();
+    else if (action === "duplicate-project") this.runProjectAction(() => this.catalog.duplicate(this.store.getState().project), "Projekt dupliziert");
+    else if (action === "rename-project") this.renameProject();
+    else if (action === "export-project") this.exportProject();
+    else if (action === "import-project") this.root.querySelector<HTMLInputElement>("[data-import-input]")?.click();
+    else if (action === "delete-project") this.brams.open("#delete-project-dialog");
+    else if (action === "confirm-delete") this.runProjectAction(() => this.catalog.removeActive(), "Projekt gelöscht");
     else if (action === "edit-chord") this.openChordDialog(Number(button.dataset.bar));
     else if (action === "save-chord") this.saveChord();
   }
 
   private handleChange(event: Event): void {
     const input = event.target as HTMLInputElement | HTMLSelectElement;
+    if (input instanceof HTMLInputElement && input.matches("[data-import-input]")) {
+      const file = input.files?.[0];
+      input.value = "";
+      if (file) void this.importFile(file);
+      return;
+    }
     const change = input.dataset.change;
     if (!change) return;
     if (change === "tempo") this.store.dispatch({ type: "project/tempo", value: Number(input.value) });
@@ -510,11 +566,81 @@ export class GrooveboxApp {
   }
 
   private confirmNewProject(): void {
-    this.audio.panic();
-    this.repository.reset();
-    this.store.dispatch({ type: "project/replace", project: createFactoryProject() });
-    this.brams.close("#new-project-dialog");
-    this.brams.toast("Werkprojekt geladen", "Vier neue Synthwave-Szenen sind bereit.", "success");
+    const name = this.root.querySelector<HTMLInputElement>("#new-project-name")?.value ?? "Neues Set";
+    this.runProjectAction(() => this.catalog.create(name), "Neues Set angelegt");
+  }
+
+  private openProjects(): void {
+    this.flushAutosave();
+    this.render();
+    this.brams.open("#projects-dialog");
+  }
+
+  private switchProject(id: string): void {
+    if (id === this.catalog.active.id) {
+      this.brams.close("#projects-dialog");
+      return;
+    }
+    this.runProjectAction(() => this.catalog.switchTo(id), "Projekt geöffnet");
+  }
+
+  private renameProject(): void {
+    const input = this.root.querySelector<HTMLInputElement>("#project-name-input");
+    const summary = this.catalog.rename(input?.value ?? "");
+    this.brams.close("#projects-dialog");
+    this.render();
+    this.brams.open("#projects-dialog");
+    this.brams.toast("Umbenannt", summary.name, "success");
+  }
+
+  private closeProjectDialogs(): void {
+    for (const dialog of ["#projects-dialog", "#new-project-dialog", "#delete-project-dialog"]) this.brams.close(dialog);
+  }
+
+  /** Saves pending edits, then opens the project the action returns with a clean history. */
+  private runProjectAction(action: () => ProjectV2, title: string): void {
+    try {
+      this.flushAutosave();
+      const project = action();
+      this.closeProjectDialogs();
+      this.audio.panic();
+      this.store.dispatch({ type: "project/load", project });
+      requestPersistentStorage();
+      this.brams.toast(title, this.catalog.active.name, "success");
+    } catch (error) {
+      this.brams.toast("Das hat nicht geklappt", error instanceof Error ? error.message : "Unbekannter Fehler", "danger");
+    }
+  }
+
+  private exportProject(): void {
+    this.flushAutosave();
+    const name = this.catalog.active.name;
+    const blob = new Blob([serializeProjectFile(name, this.store.getState().project)], { type: "application/json" });
+    downloadBlob(blob, projectFileName(name));
+    requestPersistentStorage();
+    this.brams.toast("Projektdatei gesichert", `${projectFileName(name)} liegt jetzt in deinen Downloads.`, "success");
+  }
+
+  private async importFile(file: File): Promise<void> {
+    if (window.matchMedia("(max-width: 1023px)").matches) return;
+    try {
+      const imported = parseProjectFile(await file.text(), nameFromFileName(file.name));
+      this.runProjectAction(() => this.catalog.importProject(imported.name, imported.project), "Projektdatei geöffnet");
+    } catch (error) {
+      this.brams.toast("Datei nicht geöffnet", error instanceof Error ? error.message : "Unbekannter Fehler", "danger");
+    }
+  }
+
+  private flushAutosave(): void {
+    if (this.autosaveTimer === null) return;
+    window.clearTimeout(this.autosaveTimer);
+    this.autosaveTimer = null;
+    try {
+      this.catalog.saveActive(this.store.getState().project);
+      this.store.dispatch({ type: "autosave/status", status: "saved" });
+    } catch {
+      this.store.dispatch({ type: "autosave/status", status: "error" });
+    }
   }
 
   private openChordDialog(bar: number): void {
@@ -592,4 +718,23 @@ function variationHint(amount: VariationAmount): string {
 function variationBarCount(amount: VariationAmount): string {
   if (amount === "subtle") return "nur den Ausdruck eines Steps";
   return amount === "lively" ? "höchstens einen freien Takt" : "höchstens zwei freie Takte";
+}
+
+function downloadBlob(blob: Blob, fileName: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** Asks the browser not to evict local projects under storage pressure; only after a deliberate save-like action. */
+function requestPersistentStorage(): void {
+  void navigator.storage?.persisted?.().then((persisted) => {
+    if (!persisted) void navigator.storage.persist?.();
+  }).catch(() => undefined);
 }

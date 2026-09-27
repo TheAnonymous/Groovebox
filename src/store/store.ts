@@ -36,6 +36,7 @@ export type Action =
   | { type: "transport/update"; update: Partial<AppState["transport"]> }
   | { type: "autosave/status"; status: AppState["autosave"] }
   | { type: "project/replace"; project: ProjectV2 }
+  | { type: "project/load"; project: ProjectV2 }
   | { type: "project/tempo"; value: number }
   | { type: "project/key"; value: RootNote }
   | { type: "project/scale"; value: Scale }
@@ -97,6 +98,10 @@ export class GrooveboxStore {
     }
     if (action.type === "history/redo") {
       this.redo(action);
+      return;
+    }
+    if (action.type === "project/load") {
+      this.load(action);
       return;
     }
 
@@ -255,6 +260,19 @@ export class GrooveboxStore {
       }
     }
     return false;
+  }
+
+  /** Opens another stored project: fresh UI, empty history and nothing left to autosave. */
+  private load(action: Extract<Action, { type: "project/load" }>): void {
+    this.state.project = sanitizeProject(action.project);
+    this.state.ui = createUiState();
+    this.state.transport = createTransportState();
+    this.undoStack = [];
+    this.redoStack = [];
+    this.state.canUndo = false;
+    this.state.canRedo = false;
+    this.state.autosave = "saved";
+    this.emit(action);
   }
 
   private undo(action: Action): void {

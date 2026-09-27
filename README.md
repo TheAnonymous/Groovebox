@@ -36,10 +36,16 @@ Bandenergie, Stereokorrelation und Ausklingzeit an; einen Audioexport gibt es
 bewusst nicht.
 
 Die App benötigt keine Konten, kein Backend und lädt zur Laufzeit keine
-Ressourcen von fremden Origins. Projekte werden nur in `localStorage` des
-aktuellen Browserprofils gespeichert. V1-Projekte werden automatisch nach V2
-migriert; die V1-Daten bleiben dabei als Rückfalloption unangetastet.
-Unterstützt wird eine Desktop-Fläche ab 1024×720 Pixeln.
+Ressourcen von fremden Origins. Bis zu acht benannte Projekte liegen im
+`localStorage` des aktuellen Browserprofils (Katalog `groovebox.projects.v1`,
+je Projekt Primärstand und letzte gültige Sicherung). Beim ersten Start wird ein
+vorhandenes Einzelprojekt früherer Versionen (V2 oder V1) als „Mein Set“
+übernommen; die alten Schlüssel bleiben als Rückfalloption unverändert.
+Projekte lassen sich unter **Projekte** als `.groovebox.json` sichern und
+wieder öffnen, auch per Drag & Drop ins Fenster. Importierte Dateien laufen
+durch denselben Sanitizer wie gespeicherte Stände.
+Groovebox braucht ein Fenster ab 1024 Pixel Breite; darunter erscheint eine
+Handy-Seite mit Rückweg zur Musik-Werkstatt.
 
 ## Bedienung
 

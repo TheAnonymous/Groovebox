@@ -33,7 +33,7 @@ test("Playhead, Warteschlange und Dialog", async ({ page }) => {
     document.querySelector('.gb-scene[data-scene="0"]')?.classList.add("is-running");
     document.querySelector('.gb-scene[data-scene="2"]')?.classList.add("is-queued");
   });
-  await page.getByRole("button", { name: "Neues Projekt" }).click();
+  await page.getByRole("button", { name: /Projekte verwalten/ }).click();
   await expect(page).toHaveScreenshot("performance-dialog.png", { animations: "disabled", fullPage: true });
 });
 

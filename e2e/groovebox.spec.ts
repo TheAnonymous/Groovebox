@@ -116,7 +116,8 @@ test("migriert einen gespeicherten V1-Stand im Browser ohne ihn zu überschreibe
   });
   await expect(page.locator("[data-save-status]")).toContainText("gespeichert", { timeout: 2_000 });
   const legacyRaw = await page.evaluate(() => {
-    const project = JSON.parse(localStorage.getItem("groovebox.project.v2")!);
+    const catalog = JSON.parse(localStorage.getItem("groovebox.projects.v1")!);
+    const project = JSON.parse(localStorage.getItem(`groovebox.projects.v1.project.${catalog.activeId}`)!);
     project.schemaVersion = 1;
     delete project.soundPresets;
     for (const scene of project.scenes) {
@@ -133,15 +134,66 @@ test("migriert einen gespeicherten V1-Stand im Browser ohne ihn zu überschreibe
       }
     }
     const raw = JSON.stringify(project);
+    localStorage.clear();
     localStorage.setItem("groovebox.project.v1", raw);
-    localStorage.removeItem("groovebox.project.v2");
     return raw;
   });
   await page.reload();
   await expect(page.getByLabel("Tempo")).toHaveValue("107");
   await expect(page.locator(".bu-toast")).toContainText("Version 2", { timeout: 2_000 });
+  await expect(page.getByRole("button", { name: /Projekte verwalten, geöffnet: Mein Set/ })).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem("groovebox.project.v1"))).toBe(legacyRaw);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("groovebox.project.v2")!).schemaVersion)).toBe(2);
+});
+
+test("verwaltet mehrere Projekte und tauscht sie als Datei aus", async ({ page }, testInfo) => {
+  const tempo = page.getByLabel("Tempo");
+  const setTempo = (value: string) => tempo.evaluate((element: HTMLInputElement, next) => {
+    element.value = next;
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }, value);
+  await setTempo("84");
+  await expect(page.locator("[data-save-status]")).toContainText("gespeichert");
+
+  await page.getByRole("button", { name: /Projekte verwalten/ }).click();
+  await expect(page.getByRole("dialog", { name: "Projekte" })).toBeVisible();
+  await page.getByRole("button", { name: "Neues Set" }).click();
+  await page.getByLabel("Name", { exact: true }).fill("Zweites Set");
+  await page.getByRole("button", { name: "Set anlegen" }).click();
+  await expect(page.getByRole("button", { name: /geöffnet: Zweites Set/ })).toBeVisible();
+  await expect(tempo).toHaveValue("96");
+  await expect(page.locator('[data-action="undo"]')).toBeDisabled();
+
+  await page.getByRole("button", { name: /Projekte verwalten/ }).click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Als Datei sichern" }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("zweites-set.groovebox.json");
+  const path = testInfo.outputPath("zweites-set.groovebox.json");
+  await file.saveAs(path);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: /Projekte verwalten/ }).click();
+  await page.getByRole("button", { name: /Mein erstes Set/ }).click();
+  await expect(tempo).toHaveValue("84");
+
+  await page.getByRole("button", { name: /Projekte verwalten/ }).click();
+  await page.locator("[data-import-input]").setInputFiles(path);
+  await expect(page.getByRole("button", { name: /geöffnet: Zweites Set/ })).toBeVisible();
+  await expect(page.locator(".bu-toast").last()).toContainText("Projektdatei geöffnet");
+
+  await page.getByRole("button", { name: /Projekte verwalten/ }).click();
+  await expect(page.locator(".gb-project-item")).toHaveCount(3);
+  await page.getByLabel("Name des geöffneten Projekts").fill("Importiert");
+  await page.getByRole("button", { name: "Umbenennen" }).click();
+  await expect(page.locator(".gb-project-item.is-active")).toContainText("Importiert");
+  await expect(page.getByRole("button", { name: /geöffnet: Importiert/ })).toBeAttached();
+  await page.getByRole("button", { name: "Löschen …" }).click();
+  await page.getByRole("button", { name: "Endgültig löschen" }).click();
+  await expect(page.getByRole("dialog", { name: "Projekte" })).toBeHidden();
+  await expect(page.locator("body")).not.toHaveClass(/bu-scroll-locked/);
+  await page.getByRole("button", { name: /Projekte verwalten/ }).click();
+  await expect(page.locator(".gb-project-item")).toHaveCount(2);
 });
 
 test("bedient Spuren, Szenen und Undo mit Tastatur", async ({ page }) => {
@@ -169,10 +221,10 @@ test("öffnet die Brams-Dialoge mit Fokusfalle und speichert einen sicheren Akko
   await expect(dialog).toBeHidden();
   await expect(page.locator(".gb-chord").nth(1)).toContainText("iv");
 
-  await page.getByRole("button", { name: "Neues Projekt" }).click();
-  await expect(page.getByRole("dialog", { name: "Neues Projekt beginnen?" })).toBeVisible();
+  await page.getByRole("button", { name: /Projekte verwalten/ }).click();
+  await expect(page.getByRole("dialog", { name: "Projekte" })).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog", { name: "Neues Projekt beginnen?" })).toBeHidden();
+  await expect(page.getByRole("dialog", { name: "Projekte" })).toBeHidden();
 });
 
 test("markiert eine laufende und die zuletzt vorgemerkte Szene", async ({ page, browserName }) => {
@@ -246,7 +298,9 @@ test("Chromium-Audiosmoke prüft sechs Drumrollen einzeln und Snare/Clap gelayer
   const variants = [["kick"], ["snare"], ["clap"], ["closedHat"], ["openHat"], ["tom"], ["snare", "clap"]];
   for (const voices of variants) {
     await page.evaluate((selectedVoices) => {
-      const project = JSON.parse(localStorage.getItem("groovebox.project.v2")!);
+      const catalog = JSON.parse(localStorage.getItem("groovebox.projects.v1")!);
+      const key = `groovebox.projects.v1.project.${catalog.activeId}`;
+      const project = JSON.parse(localStorage.getItem(key)!);
       for (const mix of project.mix) {
         mix.muted = mix.instrument !== "drums";
         mix.solo = false;
@@ -262,7 +316,7 @@ test("Chromium-Audiosmoke prüft sechs Drumrollen einzeln und Snare/Clap gelayer
           }
         }
       }
-      localStorage.setItem("groovebox.project.v2", JSON.stringify(project));
+      localStorage.setItem(key, JSON.stringify(project));
     }, voices);
     await page.reload();
     await page.getByRole("button", { name: "Wiedergabe starten" }).click();
