@@ -29,6 +29,7 @@ export interface AudioEngine {
   panic(): void;
   queueScene(scene: number): number | null;
   setSceneChain(repeats: number | null): void;
+  setTempoOverride(bpm: number | null): void;
   syncProject(project: ProjectV2): void;
   onPlayhead(listener: (position: PlayheadEvent) => void): () => void;
   onStatus(listener: (status: AudioStatusEvent) => void): () => void;
@@ -59,6 +60,7 @@ export class ToneAudioEngine implements AudioEngine {
   private measuredPeak = 0;
   private measuredTrackPeaks = zeroTrackPeaks();
   private readonly clock = new BarQueuedTransport();
+  private tempoOverride: number | null = null;
   private readonly playheadListeners = new Set<(position: PlayheadEvent) => void>();
   private readonly statusListeners = new Set<(status: AudioStatusEvent) => void>();
 
@@ -125,6 +127,12 @@ export class ToneAudioEngine implements AudioEngine {
 
   setSceneChain(repeats: number | null): void {
     this.clock.setChain(repeats);
+  }
+
+  /** An external MIDI clock's tempo replaces the project tempo until `null`; the project keeps its own. */
+  setTempoOverride(bpm: number | null): void {
+    this.tempoOverride = bpm === null ? null : Math.max(40, Math.min(240, bpm));
+    if (this.initialized) Tone.getTransport().bpm.rampTo(this.tempoOverride ?? this.project.tempo, 0.08);
   }
 
   /** Builds the full signal path in the current (offline) context and schedules `plan` on its transport. */
@@ -200,7 +208,7 @@ export class ToneAudioEngine implements AudioEngine {
 
   private applyProject(): void {
     const transport = Tone.getTransport();
-    transport.bpm.rampTo(this.project.tempo, 0.08);
+    transport.bpm.rampTo(this.tempoOverride ?? this.project.tempo, 0.08);
     transport.swing = this.project.swing;
     transport.swingSubdivision = "16n";
     this.master?.fader.gain.rampTo(this.project.masterVolume, 0.04);

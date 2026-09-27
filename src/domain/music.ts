@@ -11,8 +11,13 @@ import { ROOT_NOTES } from "./types";
 
 const SCALE_OFFSETS: Record<Scale, readonly number[]> = {
   minor: [0, 2, 3, 5, 7, 8, 10],
+  major: [0, 2, 4, 5, 7, 9, 11],
+  dorian: [0, 2, 3, 5, 7, 9, 10],
   minorPentatonic: [0, 3, 5, 7, 10],
 };
+
+/** Five-note scales name their chords after the seven-note scale they are cut from. */
+const PARENT_SCALES: Partial<Record<Scale, Scale>> = { minorPentatonic: "minor" };
 
 const CHORD_POSITIONS: Record<ChordColor, readonly number[]> = {
   triad: [0, 2, 4],
@@ -38,13 +43,40 @@ export const KEY_LABELS: Record<RootNote, string> = {
 
 export const SCALE_LABELS: Record<Scale, string> = {
   minor: "Moll",
+  major: "Dur",
+  dorian: "Dorisch",
   minorPentatonic: "Moll-Pentatonik",
 };
 
-export const DEGREE_LABELS = ["i", "ii°", "III", "iv", "v", "VI", "VII"] as const;
+const NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII"] as const;
 
 export function scaleOffsets(scale: Scale): readonly number[] {
   return SCALE_OFFSETS[scale];
+}
+
+/**
+ * Roman numerals for the chord on each scale degree: upper case for a major
+ * third, lower case for a minor one, ° for a diminished and + for an
+ * augmented fifth (Dur: I ii iii IV V vi vii°, Moll: i ii° III iv v VI VII).
+ */
+export function degreeLabels(scale: Scale): string[] {
+  const parent = PARENT_SCALES[scale];
+  if (parent) {
+    const parentOffsets = scaleOffsets(parent);
+    const labels = degreeLabels(parent);
+    return scaleOffsets(scale).map((offset) => labels[parentOffsets.indexOf(offset)] ?? "?");
+  }
+  const offsets = scaleOffsets(scale);
+  const above = (position: number, steps: number) => {
+    const target = position + steps;
+    return (offsets[target % offsets.length] ?? 0) + Math.floor(target / offsets.length) * 12 - (offsets[position] ?? 0);
+  };
+  return offsets.map((_, position) => {
+    const third = above(position, 2);
+    const fifth = above(position, 4);
+    const numeral = third >= 4 ? NUMERALS[position]! : NUMERALS[position]!.toLowerCase();
+    return `${numeral}${fifth === 6 ? "°" : fifth === 8 ? "+" : ""}`;
+  });
 }
 
 export function rootSemitone(root: RootNote): number {
@@ -163,7 +195,12 @@ export function currentRole(track: TrackKind, step: Step): RoleOption {
   return options.find((option) => option.degreeOffset === step.degreeOffset) ?? options[0]!;
 }
 
+/** The degree a chord actually sounds on: five-note scales stop at their fifth degree. */
+export function effectiveDegree(scale: Scale, degree: number): number {
+  return Math.min(scaleOffsets(scale).length, Math.max(1, Math.round(degree)));
+}
+
 export function chordLabel(root: RootNote, scale: Scale, chord: ChordSlot): string {
-  const degree = DEGREE_LABELS[Math.max(0, Math.min(6, chord.degree - 1))] ?? "i";
+  const degree = degreeLabels(scale)[effectiveDegree(scale, chord.degree) - 1] ?? "i";
   return `${degree} · ${chordNotes(root, scale, chord).map(noteName).join("–")}`;
 }

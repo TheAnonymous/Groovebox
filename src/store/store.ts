@@ -66,12 +66,14 @@ export type Action =
 
 export type StoreListener = (state: AppState, action: Action) => void;
 
+const MERGE_WINDOW_MS = 1_200;
 const HISTORY_LIMIT = 100;
 
 export class GrooveboxStore {
   private state: AppState;
   private readonly listeners = new Set<StoreListener>();
   private undoStack: ProjectV2[] = [];
+  private lastMerge: { key: string; at: number } | null = null;
   private redoStack: ProjectV2[] = [];
 
   constructor(project: ProjectV2) {
@@ -94,7 +96,11 @@ export class GrooveboxStore {
     return () => this.listeners.delete(listener);
   }
 
-  dispatch(action: Action): void {
+  /**
+   * `mergeKey` folds a stream of changes (a MIDI knob turning) into one undo
+   * step while the same key keeps arriving within a moment.
+   */
+  dispatch(action: Action, options: { mergeKey?: string } = {}): void {
     if (action.type === "history/undo") {
       this.undo(action);
       return;
@@ -111,7 +117,10 @@ export class GrooveboxStore {
     const before = structuredClone(this.state.project);
     const changedProject = this.reduce(action);
     if (changedProject) {
-      this.undoStack.push(before);
+      const now = Date.now();
+      const merged = options.mergeKey !== undefined && this.lastMerge?.key === options.mergeKey && now - this.lastMerge.at < MERGE_WINDOW_MS;
+      this.lastMerge = options.mergeKey === undefined ? null : { key: options.mergeKey, at: now };
+      if (!merged) this.undoStack.push(before);
       if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
       this.redoStack = [];
       this.state.canUndo = true;
@@ -272,6 +281,7 @@ export class GrooveboxStore {
 
   /** Opens another stored project: fresh UI, empty history and nothing left to autosave. */
   private load(action: Extract<Action, { type: "project/load" }>): void {
+    this.lastMerge = null;
     this.state.project = sanitizeProject(action.project);
     this.state.ui = { ...createUiState(), sceneChain: this.state.ui.sceneChain };
     this.state.transport = createTransportState();
@@ -284,6 +294,7 @@ export class GrooveboxStore {
   }
 
   private undo(action: Action): void {
+    this.lastMerge = null;
     const previous = this.undoStack.pop();
     if (!previous) return;
     this.redoStack.push(structuredClone(this.state.project));
@@ -295,6 +306,7 @@ export class GrooveboxStore {
   }
 
   private redo(action: Action): void {
+    this.lastMerge = null;
     const next = this.redoStack.pop();
     if (!next) return;
     this.undoStack.push(structuredClone(this.state.project));

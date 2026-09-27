@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  chordLabel,
   chordNotes,
+  degreeLabels,
+  effectiveDegree,
   isScaleTone,
   quantizePitch,
   scaleDegreeMidi,
@@ -211,5 +214,20 @@ describe("Werkprojekt und Sanitizing", () => {
     expect(clean.mix).toHaveLength(5);
     expect(clean.scenes).toHaveLength(4);
     expect(clean.scenes.every((scene) => scene.tracks.every((track) => track.bars.every((bar) => bar.steps.length === 16)))).toBe(true);
+  });
+});
+
+describe("Stufen je Skala", () => {
+  it("benennt Akkordstufen nach ihrer Terz und Quinte", () => {
+    expect(degreeLabels("major")).toEqual(["I", "ii", "iii", "IV", "V", "vi", "vii°"]);
+    expect(degreeLabels("minor")).toEqual(["i", "ii°", "III", "iv", "v", "VI", "VII"]);
+    expect(degreeLabels("dorian")).toEqual(["i", "ii", "III", "IV", "v", "vi°", "VII"]);
+    expect(degreeLabels("minorPentatonic")).toEqual(["i", "III", "iv", "v", "VII"]);
+  });
+
+  it("zeigt in der Pentatonik die tatsächlich klingende Stufe", () => {
+    expect(effectiveDegree("minorPentatonic", 7)).toBe(5);
+    expect(chordLabel("A", "minorPentatonic", { degree: 7, inversion: 0, color: "triad" })).toMatch(/^VII · /);
+    expect(chordLabel("C", "major", { degree: 5, inversion: 0, color: "triad" })).toBe("V · G3–B3–D4");
   });
 });

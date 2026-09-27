@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
+  // The first-visit tour has its own test; everywhere else it would cover the controls.
+  await page.addInitScript(() => localStorage.setItem("groovebox.tour.v1", "done"));
   await page.goto("./");
   await page.evaluate(() => localStorage.clear());
 });
@@ -409,4 +411,99 @@ test("exportiert den ganzen Bogen als WAV und teilt ein Set per Link", async ({ 
   expect(new URL(page.url()).hash).toBe("");
   await page.getByRole("button", { name: /Projekte verwalten/ }).click();
   await expect(page.locator(".gb-project-item")).toHaveCount(2);
+});
+
+test("führt beim ersten Besuch durch vier Stationen und lässt sich wieder aufrufen", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  await page.goto(String(baseURL));
+  const card = page.getByRole("dialog", { name: "Start und Stop" });
+  await expect(card).toBeVisible();
+  await expect(page.locator(".gb-tour__count")).toHaveText("1 / 4");
+  await page.getByRole("button", { name: "Weiter" }).click();
+  await expect(page.getByRole("dialog", { name: "Vier Szenen" })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Das Raster" })).toBeVisible();
+  await page.getByRole("button", { name: "Weiter" }).click();
+  await expect(page.locator(".gb-tour__count")).toHaveText("4 / 4");
+  await page.getByRole("button", { name: "Los geht's" }).click();
+  await expect(page.locator(".gb-tour")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Wiedergabe starten" })).toBeVisible();
+  await expect(page.locator(".gb-tour")).toHaveCount(0);
+
+  await page.keyboard.press("?");
+  const help = page.getByRole("dialog", { name: "Hilfe und Tastenkürzel" });
+  await expect(help).toContainText("Szene wählen");
+  await help.getByRole("button", { name: "Tour starten" }).click();
+  await expect(page.locator(".gb-tour__count")).toHaveText("1 / 4");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".gb-tour")).toHaveCount(0);
+  await context.close();
+});
+
+test("folgt MIDI-Clock und Reglern eines Controllers", async ({ page }) => {
+  await page.addInitScript(() => {
+    const listeners: ((event: { data: Uint8Array; timeStamp: number }) => void)[] = [];
+    const input = {
+      name: "Test-Controller",
+      state: "connected",
+      set onmidimessage(handler: (event: { data: Uint8Array; timeStamp: number }) => void) { listeners.splice(0, listeners.length, handler); },
+    };
+    const access = { inputs: new Map([["in-1", input]]), onstatechange: null };
+    Object.defineProperty(navigator, "requestMIDIAccess", { configurable: true, value: async () => access });
+    (window as unknown as { __midi(bytes: number[], timeStamp?: number): void }).__midi = (bytes, timeStamp = performance.now()) => {
+      for (const listener of listeners) listener({ data: new Uint8Array(bytes), timeStamp });
+    };
+  });
+  await page.reload();
+  const send = (bytes: number[], timeStamp?: number) => page.evaluate(([data, time]) => (window as unknown as { __midi(bytes: number[], timeStamp?: number): void }).__midi(data as number[], time as number | undefined), [bytes, timeStamp] as const);
+
+  await page.getByRole("button", { name: "MIDI", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "MIDI" });
+  await dialog.getByRole("button", { name: "MIDI verbinden" }).click();
+  await expect(dialog).toContainText("Test-Controller");
+  await expect(page.locator("[data-midi-led]")).toHaveAttribute("data-state", "ready");
+
+  for (const value of [20, 60, 100, 127]) await send([0xb0, 71, value]);
+  await dialog.getByRole("button", { name: "Fertig" }).click();
+  const drive = page.locator('input[data-macro="drive"]');
+  await expect(drive).toHaveValue("100");
+  await page.getByRole("button", { name: "Wiedergabe starten" }).focus();
+  await page.keyboard.press("Control+z");
+  await expect(drive).not.toHaveValue("100");
+  await expect(page.locator('[data-action="undo"]')).toBeDisabled();
+
+  await page.getByRole("button", { name: "MIDI", exact: true }).click();
+  await dialog.getByRole("button", { name: "Zuweisen" }).first().click();
+  await expect(dialog).toContainText("Dreh jetzt einen Regler");
+  await send([0xb2, 21, 0]);
+  await expect(dialog.locator(".gb-midi-map li").first()).toContainText("CC 21");
+
+  const interval = 60_000 / 104 / 24;
+  await page.evaluate((step) => {
+    const midi = (window as unknown as { __midi(bytes: number[], timeStamp?: number): void }).__midi;
+    for (let tick = 0; tick <= 48; tick += 1) midi([0xf8], tick * step);
+  }, interval);
+  await expect(dialog.locator(".gb-midi-clock")).toHaveText("Clock: 104 BPM");
+  await expect(page.locator("[data-audio-status]")).toHaveText("MIDI-Clock · 104 BPM");
+  await expect(dialog.locator(".gb-midi-clock")).toContainText("Keine Clock", { timeout: 3_000 });
+});
+
+test("hält den Bildschirm wach, solange Musik läuft", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "Wiedergabe wird in Chromium geprüft");
+  await page.addInitScript(() => {
+    const calls: string[] = [];
+    (window as unknown as { __wakeCalls: string[] }).__wakeCalls = calls;
+    Object.defineProperty(navigator, "wakeLock", {
+      configurable: true,
+      value: { request: async (type: string) => { calls.push(`request:${type}`); return Object.assign(new EventTarget(), { release: async () => { calls.push("release"); } }); } },
+    });
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Wiedergabe starten" }).click();
+  await expect(page.getByRole("button", { name: "Wiedergabe stoppen" })).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __wakeCalls: string[] }).__wakeCalls)).toEqual(["request:screen"]);
+  await page.getByRole("button", { name: "Wiedergabe stoppen" }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __wakeCalls: string[] }).__wakeCalls)).toEqual(["request:screen", "release"]);
 });

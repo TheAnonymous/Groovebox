@@ -1,5 +1,5 @@
 import type { AudioEngine } from "../audio/engine";
-import { chordLabel, currentRole, DEGREE_LABELS, KEY_LABELS, roleOptions, SCALE_LABELS } from "../domain/music";
+import { chordLabel, currentRole, degreeLabels, effectiveDegree, KEY_LABELS, roleOptions, SCALE_LABELS } from "../domain/music";
 import { SOUND_PRESET_DEFINITIONS } from "../domain/sound-presets";
 import type {
   Action,
@@ -46,6 +46,9 @@ import {
   type ImportedProject,
 } from "../transfer";
 import type { BramsAdapter } from "./brams";
+import { MidiLink, type MidiStatus } from "../midi";
+import { Tour, type TourStep } from "./tour";
+import { PlaybackWakeLock } from "./wake-lock";
 
 const ICON_SPRITE = `${import.meta.env.BASE_URL}vendor/braun-ui/icons.svg`;
 const SCENE_ART = ["auftakt", "fahrt", "hoehepunkt", "ausklang"].map(
@@ -87,6 +90,24 @@ const MACRO_LABELS: Record<MacroKind, { label: string; hint: string }> = {
   motion: { label: "Motion", hint: "Mehr Bewegung und Echo im Klang." },
   density: { label: "Dichte", hint: "Wie voll und präsent die Spur wirkt." },
 };
+const TOUR_STEPS: readonly TourStep[] = [
+  { target: ".gb-start", title: "Start und Stop", text: "Mit Start oder der Leertaste läuft die Musik. Das Werksset klingt sofort, alles entsteht live im Browser." },
+  { target: ".gb-scenes", title: "Vier Szenen", text: "Auftakt, Fahrt, Höhepunkt und Ausklang. Eine gewählte Szene übernimmt am nächsten Takt, so bleibt der Groove heil." },
+  { target: ".gb-grid-wrap", title: "Das Raster", text: "Links wählst du ein Instrument, hier setzt du Steps: Klick wählt aus, jeder weitere Klick wechselt Aus → Normal → Akzent → Variation. Variieren und Neu würfeln bauen ganze Takte um." },
+  { target: ".gb-arrangement", title: "Vom Loop zum Track", text: "Die Szenenfolge spielt alle Szenen nacheinander. Das Ergebnis exportierst du als WAV oder teilst es als Link. Mit ? findest du Tastenkürzel und diese Tour wieder." },
+];
+const SHORTCUTS: readonly [string, string][] = [
+  ["Leertaste", "Start und Stop"],
+  ["1 – 5", "Instrument wählen: Drums, Bass, Akkorde, Lead, Pad"],
+  ["Umschalt + 1 – 4", "Szene wählen; läuft Musik, wechselt sie am nächsten Takt"],
+  ["V", "Variieren in der gewählten Stärke"],
+  ["R", "Neu würfeln"],
+  ["Umschalt + Entf", "Spur in dieser Szene leeren"],
+  ["Pfeiltasten, Pos1, Ende", "Im Raster von Step zu Step"],
+  ["Strg + Z", "Rückgängig"],
+  ["Strg + Umschalt + Z", "Wiederholen"],
+  ["?", "Diese Hilfe"],
+];
 const COLOR_LABELS: Record<ChordColor, string> = {
   triad: "Klar",
   open: "Offen",
@@ -113,6 +134,19 @@ export class GrooveboxApp {
   private exporting = false;
   private shareUrl = "";
   private sharedOffer: ImportedProject | null = null;
+  private readonly overlays = document.createElement("div");
+  private readonly wakeLock = new PlaybackWakeLock();
+  private readonly tour = new Tour(TOUR_STEPS, { storageKey: "groovebox.tour.v1", className: "gb-tour" });
+  private readonly midi = new MidiLink("groovebox.midi.v1", {
+    status: () => this.updateMidiDom(),
+    learned: () => this.updateMidiDom(),
+    clockTempo: (bpm) => this.followClockTempo(bpm),
+    start: () => void this.startFromMidi(),
+    stop: () => { if (this.store.getState().transport.status === "playing") this.audio.stop(); },
+    control: (index, value) => this.queueMacro(index, value),
+  });
+  private readonly pendingMacros = new Map<number, number>();
+  private macroFrame: number | null = null;
 
   constructor(
     private readonly root: HTMLElement,
@@ -139,7 +173,18 @@ export class GrooveboxApp {
     });
 
     this.store.subscribe((state, action) => this.handleStateChange(state, action));
+    this.overlays.className = "gb-overlays";
+    this.overlays.innerHTML = this.overlayDialogs();
+    this.overlays.addEventListener("click", (event) => this.handleOverlayClick(event));
+    this.overlays.addEventListener("change", (event) => {
+      const input = event.target as HTMLInputElement;
+      if (input.dataset.overlayChange === "midi-clock") this.midi.setFollowClock(input.checked);
+      this.updateMidiDom();
+    });
+    document.body.append(this.overlays);
+    this.brams.init(this.overlays);
     this.audio.onStatus(({ status, message }) => {
+      this.wakeLock.playing = status === "playing";
       this.store.dispatch({
         type: "transport/update",
         update: {
@@ -171,6 +216,9 @@ export class GrooveboxApp {
     });
     this.render();
     if (warning) requestAnimationFrame(() => this.brams.toast("Projekt wiederhergestellt", warning, "warning"));
+    void this.midi.restore();
+    const desktop = !window.matchMedia("(max-width: 1023px)").matches;
+    if (desktop && this.tour.pending && !window.location.hash.startsWith("#p=")) requestAnimationFrame(() => this.tour.start());
   }
 
   private render(): void {
@@ -244,6 +292,7 @@ export class GrooveboxApp {
     `;
     this.brams.init(this.root);
     this.updateTransportDom(state);
+    this.updateMidiDom();
     if (focusKey) requestAnimationFrame(() => this.root.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus());
   }
 
@@ -270,6 +319,8 @@ export class GrooveboxApp {
           <span class="bu-status bu-status--${saveTone}" data-save-status>${saveLabel}</span>
         </div>
         <div class="gb-header-actions">
+          ${MidiLink.supported() ? `<button class="bu-button bu-button--sm gb-midi-button" type="button" data-action="open-midi" data-focus-key="midi" title="MIDI-Controller und MIDI-Clock verbinden"><span class="gb-midi-led" data-midi-led aria-hidden="true"></span>MIDI</button>` : ""}
+          <button class="bu-button bu-button--sm" type="button" data-action="open-help" data-focus-key="help" aria-label="Hilfe und Tastenkürzel" title="Hilfe und Tastenkürzel (?)">?</button>
           <button class="bu-button bu-button--sm" type="button" data-action="undo" ${state.canUndo ? "" : "disabled"} title="Letzte musikalische Änderung rückgängig machen (Strg+Z)">↶</button>
           <button class="bu-button bu-button--sm" type="button" data-action="redo" ${state.canRedo ? "" : "disabled"} title="Änderung wiederholen (Strg+Umschalt+Z)">↷</button>
           <button class="bu-button bu-button--sm gb-project-button" type="button" data-action="open-projects" data-focus-key="projects" aria-label="Projekte verwalten, geöffnet: ${escapeHtml(this.catalog.active.name)}" title="Projekte: neu, duplizieren, als Datei sichern oder öffnen"><span class="gb-project-button__name">${escapeHtml(this.catalog.active.name)}</span><span aria-hidden="true">▾</span></button>
@@ -424,7 +475,7 @@ export class GrooveboxApp {
   private dialogs(state: AppState): string {
     const chord = state.project.scenes[state.ui.selectedScene]!.chords[this.editingChordBar]!;
     return `${this.projectDialogs()}${this.shareDialogs(state)}
-      <div id="chord-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="chord-title"><div class="bu-dialog__header"><div><h2 id="chord-title" class="bu-dialog__title">Akkord · Takt ${this.editingChordBar + 1}</h2><p class="bu-dialog__description">Alle Varianten bleiben sicher in ${KEY_LABELS[state.project.key]} ${SCALE_LABELS[state.project.scale]}.</p></div><button class="bu-icon-button" type="button" data-bu-close aria-label="Dialog schließen"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#close"></use></svg></button></div><div class="bu-dialog__body gb-dialog-fields"><label class="bu-field"><span class="bu-field__label">Stufe</span><select class="bu-select" id="chord-degree">${DEGREE_LABELS.map((label, index) => option(String(index + 1), label, String(chord.degree))).join("")}</select></label><label class="bu-field"><span class="bu-field__label">Farbe</span><select class="bu-select" id="chord-color">${CHORD_COLORS.map((color) => option(color, COLOR_LABELS[color], chord.color)).join("")}</select></label><label class="bu-field"><span class="bu-field__label">Lage</span><select class="bu-select" id="chord-inversion">${[-1, 0, 1].map((value) => option(String(value), value === -1 ? "Tief" : value === 1 ? "Hoch" : "Mitte", String(chord.inversion))).join("")}</select></label></div><div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Abbrechen</button><button class="bu-button bu-button--primary" type="button" data-action="save-chord">Akkord übernehmen</button></div></section></div>
+      <div id="chord-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="chord-title"><div class="bu-dialog__header"><div><h2 id="chord-title" class="bu-dialog__title">Akkord · Takt ${this.editingChordBar + 1}</h2><p class="bu-dialog__description">Alle Varianten bleiben sicher in ${KEY_LABELS[state.project.key]} ${SCALE_LABELS[state.project.scale]}.</p></div><button class="bu-icon-button" type="button" data-bu-close aria-label="Dialog schließen"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#close"></use></svg></button></div><div class="bu-dialog__body gb-dialog-fields"><label class="bu-field"><span class="bu-field__label">Stufe</span><select class="bu-select" id="chord-degree">${degreeLabels(state.project.scale).map((label, index) => option(String(index + 1), label, String(effectiveDegree(state.project.scale, chord.degree)))).join("")}</select></label><label class="bu-field"><span class="bu-field__label">Farbe</span><select class="bu-select" id="chord-color">${CHORD_COLORS.map((color) => option(color, COLOR_LABELS[color], chord.color)).join("")}</select></label><label class="bu-field"><span class="bu-field__label">Lage</span><select class="bu-select" id="chord-inversion">${[-1, 0, 1].map((value) => option(String(value), value === -1 ? "Tief" : value === 1 ? "Hoch" : "Mitte", String(chord.inversion))).join("")}</select></label></div><div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Abbrechen</button><button class="bu-button bu-button--primary" type="button" data-action="save-chord">Akkord übernehmen</button></div></section></div>
       <div class="bu-toast-region" data-bu-toast-region aria-live="polite" aria-atomic="false"></div>`;
   }
 
@@ -583,6 +634,8 @@ export class GrooveboxApp {
     else if (action === "vary") this.store.dispatch({ type: "track/vary" });
     else if (action === "randomize") this.store.dispatch({ type: "track/randomize" });
     else if (action === "open-projects") this.openProjects();
+    else if (action === "open-help") this.brams.open("#help-dialog");
+    else if (action === "open-midi") this.openMidi();
     else if (action === "toggle-chain") this.toggleChain();
     else if (action === "scene-repeats") this.store.dispatch({ type: "project/scene-repeats", value: Number(button.dataset.value) as AppState["project"]["sceneRepeats"] });
     else if (action === "open-export") this.brams.open("#export-dialog");
@@ -832,6 +885,104 @@ export class GrooveboxApp {
     this.store.dispatch({ type: "chord/update", bar: this.editingChordBar, value: { degree, inversion, color } });
   }
 
+  private overlayDialogs(): string {
+    const close = `<button class="bu-icon-button" type="button" data-bu-close aria-label="Dialog schließen"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#close"></use></svg></button>`;
+    return `<div id="help-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="help-title"><div class="bu-dialog__header"><div><h2 id="help-title" class="bu-dialog__title">Hilfe und Tastenkürzel</h2><p class="bu-dialog__description">Fast alles geht auch über die Tastatur, solange kein Eingabefeld aktiv ist.</p></div>${close}</div>
+        <div class="bu-dialog__body"><dl class="gb-shortcuts">${SHORTCUTS.map(([keys, meaning]) => `<div><dt>${keys.split(", ").map((alternative) => alternative.split(" + ").map((key) => `<kbd>${escapeHtml(key)}</kbd>`).join(" + ")).join(", ")}</dt><dd>${escapeHtml(meaning)}</dd></div>`).join("")}</dl></div>
+        <div class="bu-dialog__footer"><button class="bu-button" type="button" data-overlay="start-tour">Tour starten</button><button class="bu-button bu-button--primary" type="button" data-bu-close>Fertig</button></div></section></div>
+      <div id="midi-dialog" class="bu-overlay" hidden tabindex="-1"><section class="bu-dialog" role="dialog" aria-modal="true" aria-labelledby="midi-title"><div class="bu-dialog__header"><div><h2 id="midi-title" class="bu-dialog__title">MIDI</h2><p class="bu-dialog__description">Ein Controller dreht an den Makros, eine andere App oder ein Gerät gibt mit seiner MIDI-Clock Tempo, Start und Stop vor.</p></div>${close}</div>
+        <div class="bu-dialog__body gb-midi" data-midi-body></div>
+        <div class="bu-dialog__footer"><button class="bu-button bu-button--primary" type="button" data-bu-close>Fertig</button></div></section></div>`;
+  }
+
+  private handleOverlayClick(event: Event): void {
+    const button = (event.target as Element).closest<HTMLElement>("[data-overlay]");
+    if (!button) return;
+    const action = button.dataset.overlay;
+    if (action === "start-tour") {
+      this.brams.close("#help-dialog");
+      requestAnimationFrame(() => this.tour.start());
+    } else if (action === "midi-connect") {
+      // The click lets the browser start audio, so a later MIDI start can play.
+      void this.audio.initialize();
+      void this.midi.connect();
+    } else if (action === "midi-disconnect") {
+      this.midi.disconnect();
+      this.followClockTempo(null);
+    } else if (action === "midi-learn") {
+      const index = Number(button.dataset.index);
+      this.midi.learn(this.midi.learningIndex === index ? null : index);
+    } else if (action === "midi-reset") {
+      this.midi.resetMapping();
+    }
+    this.updateMidiDom();
+  }
+
+  private openMidi(): void {
+    this.updateMidiDom();
+    this.brams.open("#midi-dialog");
+  }
+
+  private updateMidiDom(): void {
+    const status = this.midi.status;
+    this.root.querySelector<HTMLElement>("[data-midi-led]")?.setAttribute("data-state", status.state);
+    const body = this.overlays.querySelector<HTMLElement>("[data-midi-body]");
+    if (body) body.innerHTML = this.midiBody(status);
+  }
+
+  private midiBody(status: MidiStatus): string {
+    if (status.state === "unsupported") return `<p>Dieser Browser kann kein Web MIDI. Chrome und Edge können es, Firefox nach einer Nachfrage.</p>`;
+    if (status.state === "connecting") return `<p role="status">Verbinde … Bestätige die Nachfrage des Browsers.</p>`;
+    if (status.state !== "ready") {
+      const hint = status.state === "denied"
+        ? `<p class="gb-inline-note">Der Browser hat MIDI abgelehnt. Erlaube es in den Website-Einstellungen und versuche es noch einmal.</p>`
+        : status.state === "error" ? `<p class="gb-inline-note">MIDI ließ sich nicht öffnen. Steck das Gerät neu ein und versuche es noch einmal.</p>` : "";
+      return `<p>Die Groovebox hört nur zu: Sie liest Clock und Regler und sendet nichts zurück.</p>${hint}<button class="bu-button bu-button--primary" type="button" data-overlay="midi-connect">MIDI verbinden</button>`;
+    }
+    const learning = this.midi.learningIndex;
+    const clock = this.midi.clockBpm;
+    const inputs = status.inputs.length > 0 ? status.inputs.map(escapeHtml).join(", ") : "Noch kein Gerät. Steck einen Controller an, er erscheint hier von selbst.";
+    return `<p><strong>Eingänge:</strong> ${inputs}</p>
+      <label class="gb-midi-toggle"><input type="checkbox" data-overlay-change="midi-clock" ${this.midi.followClock ? "checked" : ""}> Tempo, Start und Stop folgen der MIDI-Clock</label>
+      <p class="gb-midi-clock" role="status">${!this.midi.followClock ? "Die Clock wird ignoriert." : clock === null ? "Keine Clock – die Groovebox spielt in ihrem eigenen Tempo." : `Clock: ${clock} BPM`}</p>
+      <h3>Regler → Makros der gewählten Spur</h3>
+      <ul class="gb-midi-map">${MACRO_KINDS.map((macro, index) => {
+        const controller = this.midi.mapping[index] ?? -1;
+        const active = learning === index;
+        return `<li><span>${MACRO_LABELS[macro].label}</span><output>${active ? "Dreh jetzt einen Regler …" : controller >= 0 ? `CC ${controller}` : "nicht zugewiesen"}</output><button class="bu-button bu-button--sm" type="button" data-overlay="midi-learn" data-index="${index}" aria-pressed="${active}">${active ? "Abbrechen" : "Zuweisen"}</button></li>`;
+      }).join("")}</ul>
+      <div class="gb-midi-actions"><button class="bu-button bu-button--sm" type="button" data-overlay="midi-reset">CC 70–74 wiederherstellen</button><button class="bu-button bu-button--sm" type="button" data-overlay="midi-disconnect">MIDI trennen</button></div>`;
+  }
+
+  private followClockTempo(bpm: number | null): void {
+    this.audio.setTempoOverride(bpm);
+    this.root.dataset.midiTempo = bpm === null ? "" : String(bpm);
+    const playing = this.store.getState().transport.status === "playing";
+    if (bpm !== null || playing) this.store.dispatch({ type: "transport/update", update: { message: bpm === null ? "MIDI-Clock beendet – eigenes Tempo" : `MIDI-Clock · ${bpm} BPM` } });
+    this.updateMidiDom();
+  }
+
+  private async startFromMidi(): Promise<void> {
+    if (this.store.getState().transport.status === "playing") return;
+    if (navigator.userActivation && !navigator.userActivation.hasBeenActive) {
+      this.store.dispatch({ type: "transport/update", update: { message: "MIDI-Start: klick einmal in die Groovebox, damit der Browser Ton erlaubt" } });
+      return;
+    }
+    await this.audio.start(this.store.getState().ui.selectedScene);
+  }
+
+  private queueMacro(index: number, value: number): void {
+    this.pendingMacros.set(index, value);
+    this.macroFrame ??= requestAnimationFrame(() => {
+      this.macroFrame = null;
+      for (const [macroIndex, macroValue] of this.pendingMacros) {
+        const macro = MACRO_KINDS[macroIndex];
+        if (macro) this.store.dispatch({ type: "track/macro", macro, value: macroValue }, { mergeKey: `midi-${macro}` });
+      }
+      this.pendingMacros.clear();
+    });
+  }
+
   private handleGridKeys(event: KeyboardEvent): void {
     const target = (event.target as Element).closest<HTMLElement>(".gb-step");
     if (!target || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
@@ -849,7 +1000,12 @@ export class GrooveboxApp {
 
   private handleGlobalKeys(event: KeyboardEvent): void {
     const target = event.target as HTMLElement;
-    if (target.matches("input, select, textarea, [contenteditable=true]") || target.closest("[role=dialog]")) return;
+    if (target.matches("input, select, textarea, [contenteditable=true]") || target.closest("[role=dialog], .gb-tour")) return;
+    if (event.key === "?") {
+      event.preventDefault();
+      this.brams.open("#help-dialog");
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
       event.preventDefault();
       this.store.dispatch({ type: event.shiftKey ? "history/redo" : "history/undo" });

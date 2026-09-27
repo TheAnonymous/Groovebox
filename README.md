@@ -32,8 +32,9 @@ Für die lokale Hörabnahme startet `npm run audio:lab` das nicht im
 Produktionsbuild enthaltene Sound-Lab ausschließlich auf
 `http://127.0.0.1:4174/audio-lab.html`. Es rendert den Produktionssignalweg
 offline, bietet A/B-Hörpegelabgleich und zeigt Peak, RMS, Crest-Faktor,
-Bandenergie, Stereokorrelation und Ausklingzeit an; einen Audioexport gibt es
-bewusst nicht.
+Bandenergie, Stereokorrelation und Ausklingzeit an; das Lab selbst exportiert
+nichts. `npm run render:demo` rendert die Hörprobe der Handy-Seite und der
+Musik-Werkstatt über den WAV-Export der App neu (braucht ffmpeg).
 
 Die App benötigt keine Konten, kein Backend und lädt zur Laufzeit keine
 Ressourcen von fremden Origins. Bis zu acht benannte Projekte liegen im
@@ -55,6 +56,24 @@ Handy-Seite mit Rückweg zur Musik-Werkstatt.
 - `V`: Pattern variieren, `R`: neues typisches Pattern
 - `Strg+Z` / `Strg+Umschalt+Z`: Rückgängig/Wiederholen
 - `Umschalt+Entf`: aktive Spur leeren
+- `?`: Hilfe mit allen Tastenkürzeln und der Einführungstour
+
+Beim ersten Besuch führt eine kurze Tour durch Start, Szenen, Raster und
+Szenenfolge. Tonart und Skala (Moll, Dur, Dorisch, Moll-Pentatonik) gelten für
+das ganze Set; die Akkordstufen heißen je Skala richtig (Dur: I ii iii IV V vi
+vii°). Solange Musik läuft, bleibt der Bildschirm an.
+
+**Vom Loop zum Track:** Mit **Szenenfolge an** spielen Auftakt, Fahrt,
+Höhepunkt und Ausklang nacheinander, jede Szene 4, 8 oder 16 Takte lang.
+**Als WAV exportieren** rendert den ganzen Bogen oder eine Szene als Loop durch
+dieselbe Engine wie die Wiedergabe, schneller als in Echtzeit. **Link teilen**
+packt das Set komprimiert in den Teil der Adresse hinter `#`; er wird nie an den
+Server geschickt, und wer ihn öffnet, übernimmt eine eigene Kopie.
+
+**MIDI** (Chrome, Edge; Firefox nach Nachfrage): Die Groovebox hört nur zu. Eine
+MIDI-Clock gibt Tempo, Start und Stop vor, ohne das Tempo des Sets zu ändern;
+die Regler CC 70–74 steuern die fünf Makros der gewählten Spur, jeder Regler
+lässt sich im MIDI-Dialog neu zuweisen. Eine Drehbewegung ist ein Undo-Schritt.
 
 Die vendorte BraunUi-Version und ihre Lizenzen sind in
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) dokumentiert.

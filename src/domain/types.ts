@@ -23,7 +23,7 @@ export const ROOT_NOTES = [
   "B",
 ] as const;
 
-export const SCALES = ["minor", "minorPentatonic"] as const;
+export const SCALES = ["minor", "major", "dorian", "minorPentatonic"] as const;
 export const TRACK_KINDS = ["drums", "bass", "chords", "lead", "pad"] as const;
 export const DYNAMICS = ["ghost", "normal", "accent"] as const;
 export const STEP_LENGTHS = ["short", "normal", "long"] as const;
