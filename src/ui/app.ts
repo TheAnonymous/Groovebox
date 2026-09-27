@@ -216,7 +216,7 @@ export class GrooveboxApp {
               ${this.soundInspector(state)}
             </aside>
           </div>
-          <p class="gb-local-note"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#info"></use></svg> Deine Projekte liegen nur in diesem Browser. Wichtige Sets sicherst du unter <strong>Projekte → Als Datei sichern</strong>; eine Projektdatei kannst du auch einfach ins Fenster ziehen.</p>
+          <p class="gb-local-note"><svg class="bu-icon" aria-hidden="true"><use href="${ICON_SPRITE}#info"></use></svg> Deine Projekte liegen nur in diesem Browser. Wichtige Sets sicherst du unter <strong>Projekte → Als Datei sichern</strong>. Eine Projektdatei kannst du auch einfach ins Fenster ziehen.</p>
         </main>
         ${this.dialogs(state)}
       </div>
