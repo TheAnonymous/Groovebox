@@ -631,3 +631,17 @@ test("startet und stoppt zwei gekoppelte Tabs im Gleichtakt", async ({ page, con
   await expect(page.locator(".gb-link-led")).toHaveAttribute("data-state", "waiting");
   await partner.close();
 });
+
+test("zeigt Meldungen mit Symbolen aus dem mitgelieferten Sprite", async ({ page }) => {
+  const missing: string[] = [];
+  page.on("response", (response) => { if (response.status() >= 400) missing.push(response.url()); });
+  await page.getByRole("button", { name: /Projekte verwalten/ }).click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Als Datei sichern" }).click();
+  await download;
+  const icons = page.locator(".bu-toast use");
+  await expect(icons.first()).toHaveAttribute("href", "/Groovebox/vendor/braun-ui/icons.svg#check");
+  await expect(icons.last()).toHaveAttribute("href", "/Groovebox/vendor/braun-ui/icons.svg#close");
+  await page.waitForTimeout(300);
+  expect(missing).toEqual([]);
+});

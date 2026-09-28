@@ -16,6 +16,8 @@ declare global {
   }
 }
 
+const ICON_SPRITE = `${import.meta.env.BASE_URL}vendor/braun-ui/icons.svg`;
+
 export interface BramsAdapter {
   init(root?: ParentNode): void;
   open(target: string | Element): void;
@@ -41,7 +43,14 @@ export class BrowserBramsAdapter implements BramsAdapter {
     message: string,
     tone: "neutral" | "success" | "warning" | "danger" = "neutral",
   ): void {
-    this.withApi((api) => api.toast({ title, message, tone, duration: 5000 }));
+    this.withApi((api) => {
+      const item = api.toast({ title, message, tone, duration: 5000 });
+      // The vendored toast points at a relative icons.svg; the sprite lives under vendor/braun-ui/.
+      item.querySelectorAll("use").forEach((use) => {
+        const href = use.getAttribute("href");
+        if (href?.startsWith("icons.svg#")) use.setAttribute("href", `${ICON_SPRITE}${href.slice("icons.svg".length)}`);
+      });
+    });
   }
 
   private withApi(action: (api: BraunUiApi) => void): void {
