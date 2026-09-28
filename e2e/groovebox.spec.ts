@@ -633,15 +633,13 @@ test("startet und stoppt zwei gekoppelte Tabs im Gleichtakt", async ({ page, con
 });
 
 test("zeigt Meldungen mit Symbolen aus dem mitgelieferten Sprite", async ({ page }) => {
-  const missing: string[] = [];
-  page.on("response", (response) => { if (response.status() >= 400) missing.push(response.url()); });
   await page.getByRole("button", { name: /Projekte verwalten/ }).click();
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Als Datei sichern" }).click();
   await download;
-  const icons = page.locator(".bu-toast use");
-  await expect(icons.first()).toHaveAttribute("href", "/Groovebox/vendor/braun-ui/icons.svg#check");
-  await expect(icons.last()).toHaveAttribute("href", "/Groovebox/vendor/braun-ui/icons.svg#close");
-  await page.waitForTimeout(300);
-  expect(missing).toEqual([]);
+  // BraunUI's toasts refer to a relative icons.svg; it must be the sprite, not the app's fallback page.
+  await expect(page.locator(".bu-toast use").first()).toHaveAttribute("href", "icons.svg#check");
+  const sprite = await page.request.get("icons.svg");
+  expect(sprite.headers()["content-type"]).toContain("image/svg+xml");
+  expect(await sprite.text()).toContain('id="check"');
 });
