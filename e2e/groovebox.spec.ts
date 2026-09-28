@@ -160,7 +160,15 @@ test("verwaltet mehrere Projekte und tauscht sie als Datei aus", async ({ page }
   await page.getByRole("button", { name: /Projekte verwalten/ }).click();
   await expect(page.getByRole("dialog", { name: "Projekte" })).toBeVisible();
   await page.getByRole("button", { name: "Neues Set" }).click();
-  await page.getByLabel("Name", { exact: true }).fill("Zweites Set");
+  // Under load the dialog can still be settling after it shows; a name typed
+  // too early was replaced by the default. Wait until it is ready for typing.
+  const name = page.getByLabel("Name", { exact: true });
+  await expect(name).toHaveValue("Neues Set");
+  await expect(page.getByRole("dialog", { name: "Neues Set" })).toBeVisible();
+  await expect(async () => {
+    await name.fill("Zweites Set");
+    await expect(name).toHaveValue("Zweites Set", { timeout: 500 });
+  }).toPass({ timeout: 10_000 });
   await page.getByRole("button", { name: "Set anlegen" }).click();
   await expect(page.getByRole("button", { name: /geöffnet: Zweites Set/ })).toBeVisible();
   await expect(tempo).toHaveValue("96");
