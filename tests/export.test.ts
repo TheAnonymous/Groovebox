@@ -96,3 +96,23 @@ describe("Live-Aufnahme", () => {
     expect(wav.getInt16(44 + 3_050 * 4 + 2, true)).toBe(-8_000);
   });
 });
+
+describe("Stems", () => {
+  it("packt jede hörbare Spur gleich lang in ein ZIP und lässt stumme aus", async () => {
+    const channels = Array.from({ length: 6 }, () => new Float32Array(4_000));
+    channels[0]![100] = 0.5;
+    channels[5]![1_800] = -0.25;
+    const buffer = { numberOfChannels: 6, sampleRate: 1_000, length: 4_000, getChannelData: (index: number) => channels[index]! };
+    const { stemsArchive } = await import("../src/audio/stems");
+    const { archive, included, silent } = stemsArchive(buffer, ["drums", "bass", "lead"], 1_000);
+    expect(included).toEqual(["drums", "lead"]);
+    expect(silent).toEqual(["bass"]);
+    const zip = new Uint8Array(await archive.arrayBuffer());
+    const text = new TextDecoder().decode(zip);
+    expect(text).toContain("01-drums.wav");
+    expect(text).toContain("03-lead.wav");
+    expect(text).not.toContain("02-bass.wav");
+    const firstData = new DataView(zip.buffer, 30 + "01-drums.wav".length);
+    expect(firstData.getUint32(40, true)).toBe((1_800 + 250) * 2 * 2);
+  });
+});

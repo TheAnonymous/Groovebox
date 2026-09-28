@@ -27,6 +27,8 @@ import {
   DRUM_VOICES,
   INTENTS,
   LOOP_LENGTHS,
+  MAX_TEMPO,
+  MIN_TEMPO,
   MACRO_KINDS,
   RATCHETS,
   ROOT_NOTES,
@@ -41,6 +43,8 @@ import { MAX_PROJECTS, type ProjectCatalog } from "../catalog";
 import { planSeconds, renderPlan, renderProject, type ExportMode } from "../audio/render";
 import { audibleRange, encodePcm16Wav, encodeWav, trimmedLength } from "../audio/wav";
 import { MAX_RECORDING_SECONDS } from "../audio/recorder";
+import { stemsArchive } from "../audio/stems";
+import { AppLink, fitTempo, type LinkPeer } from "../link";
 import type { PerformanceState } from "../audio/engine";
 import {
   encodeShareFragment,
@@ -160,7 +164,7 @@ export class GrooveboxApp {
     learned: () => this.updateMidiDom(),
     clockTempo: (bpm) => this.followClockTempo(bpm),
     start: () => void this.startFromMidi(),
-    stop: () => { if (this.store.getState().transport.status === "playing") this.audio.stop(); },
+    stop: () => { if (this.store.getState().transport.status === "playing") this.stopPlayback(); },
     control: (index, value) => this.queueMacro(index, value),
   });
   private readonly pendingMacros = new Map<number, number>();
@@ -171,6 +175,15 @@ export class GrooveboxApp {
   private filterValue = 0;
   private filterTarget = 0;
   private filterFrame: number | null = null;
+  private linkPeers: LinkPeer[] = [];
+  /** The partner's tempo this app follows, or `null` while it plays its own. */
+  private linkTempo: number | null = null;
+  private readonly link = new AppLink("groovebox", {
+    start: (at, bpm, from) => void this.followStart(at, bpm, from),
+    stop: () => { if (this.store.getState().transport.status === "playing") this.audio.stop(); },
+    tempo: (bpm, from) => this.followTempo(bpm, from),
+    peers: (peers) => { this.linkPeers = peers; this.render(); },
+  });
   private macroFrame: number | null = null;
 
   constructor(
@@ -187,6 +200,7 @@ export class GrooveboxApp {
     this.root.addEventListener("keydown", (event) => this.handleGridKeys(event));
     window.addEventListener("keydown", (event) => this.handleGlobalKeys(event));
     window.addEventListener("beforeunload", () => this.audio.dispose(), { once: true });
+    window.addEventListener("pagehide", () => this.link.disable());
     window.addEventListener("dragover", (event) => {
       if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
     });
@@ -373,6 +387,7 @@ export class GrooveboxApp {
           <span class="bu-status bu-status--${saveTone}" data-save-status>${saveLabel}</span>
         </div>
         <div class="gb-header-actions">
+          ${AppLink.supported() ? `<button class="bu-button bu-button--sm gb-link-button" type="button" data-action="toggle-link" data-focus-key="link" aria-pressed="${this.link.enabled}" title="${this.linkTitle()}"><span class="gb-link-led" data-state="${!this.link.enabled ? "off" : this.linkPeers.length > 0 ? "linked" : "waiting"}" aria-hidden="true"></span>Gleichtakt</button>` : ""}
           ${MidiLink.supported() ? `<button class="bu-button bu-button--sm gb-midi-button" type="button" data-action="open-midi" data-focus-key="midi" title="MIDI-Controller und MIDI-Clock verbinden"><span class="gb-midi-led" data-midi-led aria-hidden="true"></span>MIDI</button>` : ""}
           <button class="bu-button bu-button--sm" type="button" data-action="open-help" data-focus-key="help" aria-label="Hilfe und Tastenkürzel" title="Hilfe und Tastenkürzel (?)">?</button>
           <button class="bu-button bu-button--sm" type="button" data-action="undo" ${state.canUndo ? "" : "disabled"} title="Letzte musikalische Änderung rückgängig machen (Strg+Z)">↶</button>
@@ -450,7 +465,7 @@ export class GrooveboxApp {
       return;
     }
     try {
-      if (this.store.getState().transport.status !== "playing") await this.audio.start(this.store.getState().ui.selectedScene);
+      if (this.store.getState().transport.status !== "playing") await this.startPlayback();
       await this.audio.startRecording();
     } catch (error) {
       this.brams.toast("Aufnahme nicht gestartet", error instanceof Error ? error.message : "Unbekannter Fehler", "danger");
@@ -690,6 +705,7 @@ export class GrooveboxApp {
         <div class="bu-dialog__body gb-export-options">
           <label class="gb-export-option"><input type="radio" name="export-mode" value="arc" checked><span><strong>Ganzer Bogen</strong><small>Auftakt, Fahrt, Höhepunkt und Ausklang mit je ${bars} Takten · ${arc}</small></span></label>
           <label class="gb-export-option"><input type="radio" name="export-mode" value="scene"><span><strong>Nur „${escapeHtml(scene.name)}“</strong><small>${bars} Takte als Loop · ${loop}</small></span></label>
+          <label class="gb-export-option gb-export-stems"><input type="checkbox" name="export-stems"><span><strong>Spuren einzeln (Stems)</strong><small>Jede Spur als eigene WAV-Datei in einem ZIP, vor dem Master-Bus – zum Weitermischen in einer DAW.</small></span></label>
           <p class="gb-export-status" data-export-status role="status"></p>
         </div>
         <div class="bu-dialog__footer"><button class="bu-button" type="button" data-bu-close>Abbrechen</button><button class="bu-button bu-button--primary" type="button" data-action="confirm-export">WAV erstellen</button></div></section></div>
@@ -731,6 +747,11 @@ export class GrooveboxApp {
       return;
     }
     this.audio.setSceneChain(state.ui.sceneChain ? state.project.sceneRepeats : null);
+    if (action.type === "project/tempo" && this.link.enabled) {
+      // Turning the tempo takes the lead: this app plays its own tempo and the partner follows.
+      this.releaseLinkTempo();
+      this.link.announceTempo(state.project.tempo);
+    }
     if (!action.type.startsWith("ui/")) {
       this.audio.syncProject(state.project);
       if (state.autosave === "saving") this.scheduleAutosave();
@@ -794,7 +815,8 @@ export class GrooveboxApp {
     if (!button) return;
     const action = button.dataset.action;
     if (action === "toggle-play") void this.togglePlayback();
-    else if (action === "panic") this.audio.panic();
+    else if (action === "panic") { this.audio.panic(); if (this.link.enabled) this.link.announceStop(); }
+    else if (action === "toggle-link") this.toggleLink();
     else if (action === "undo") this.store.dispatch({ type: "history/undo" });
     else if (action === "redo") this.store.dispatch({ type: "history/redo" });
     else if (action === "select-scene") this.selectScene(Number(button.dataset.scene));
@@ -867,11 +889,60 @@ export class GrooveboxApp {
   }
 
   private async togglePlayback(): Promise<void> {
-    if (this.store.getState().transport.status === "playing") {
-      this.audio.stop();
-    } else {
-      await this.audio.start(this.store.getState().ui.selectedScene);
+    if (this.store.getState().transport.status === "playing") this.stopPlayback();
+    else await this.startPlayback();
+  }
+
+  /** Every local start: alone, or as the leader of a coupled app starting at the same moment. */
+  private async startPlayback(): Promise<void> {
+    const scene = this.store.getState().ui.selectedScene;
+    if (!this.link.enabled || this.link.peers.length === 0) {
+      await this.audio.start(scene);
+      return;
     }
+    this.releaseLinkTempo();
+    await this.audio.start(scene, this.link.announceStart(this.store.getState().project.tempo));
+  }
+
+  private stopPlayback(): void {
+    this.audio.stop();
+    if (this.link.enabled) this.link.announceStop();
+  }
+
+  private toggleLink(): void {
+    if (this.link.enabled) {
+      this.link.disable();
+      this.releaseLinkTempo();
+    } else {
+      // The click lets this tab start audio later, when the partner starts it.
+      void this.audio.initialize();
+      this.link.enable();
+    }
+    this.render();
+  }
+
+  private async followStart(at: number, bpm: number, from: LinkPeer): Promise<void> {
+    this.linkTempo = fitTempo(bpm, MIN_TEMPO, MAX_TEMPO);
+    this.audio.setTempoOverride(this.linkTempo);
+    if (this.store.getState().transport.status === "playing") this.audio.stop();
+    if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return;
+    await this.audio.start(this.store.getState().ui.selectedScene, at);
+    this.store.dispatch({ type: "transport/update", update: { message: `Gleichtakt mit ${appName(from.app)} · ${Math.round(this.linkTempo)} BPM` } });
+  }
+
+  private followTempo(bpm: number, from: LinkPeer): void {
+    if (this.linkTempo === null) return;
+    this.linkTempo = fitTempo(bpm, MIN_TEMPO, MAX_TEMPO);
+    this.audio.setTempoOverride(this.linkTempo);
+    if (this.store.getState().transport.status === "playing") {
+      this.store.dispatch({ type: "transport/update", update: { message: `Gleichtakt mit ${appName(from.app)} · ${Math.round(this.linkTempo)} BPM` } });
+    }
+  }
+
+  private releaseLinkTempo(): void {
+    if (this.linkTempo === null) return;
+    this.linkTempo = null;
+    this.audio.setTempoOverride(null);
   }
 
   private selectOrCycleStep(bar: number, step: number): void {
@@ -983,13 +1054,25 @@ export class GrooveboxApp {
     try {
       this.flushAutosave();
       const project = structuredClone(this.store.getState().project);
+      const stems = this.root.querySelector<HTMLInputElement>('input[name="export-stems"]')?.checked === true;
       const buffer = await renderProject(project, mode, (fraction) => {
         if (status) status.textContent = `Wird gerendert … ${Math.round(fraction * 100)} % von etwa ${estimate} Sekunden. Du kannst das Fenster dabei offen lassen.`;
-      });
+      }, { stems });
       const musicFrames = Math.round(planSeconds(project, renderPlan(project, mode)) * buffer.sampleRate);
-      const wav = encodeWav(buffer, trimmedLength(buffer, musicFrames));
       const suffix = mode.kind === "arc" ? "bogen" : fileSlug(project.scenes[mode.scene]?.name ?? "szene");
-      const fileName = `${fileSlug(this.catalog.active.name)}-${suffix}.wav`;
+      const base = `${fileSlug(this.catalog.active.name)}-${suffix}`;
+      if (stems) {
+        const { archive, included, silent } = stemsArchive(buffer, TRACK_KINDS, musicFrames);
+        if (included.length === 0) throw new Error("Alle Spuren sind stumm.");
+        downloadBlob(archive, `${base}-stems.zip`);
+        if (status) status.textContent = "";
+        this.brams.close("#export-dialog");
+        const skipped = silent.length > 0 ? ` Stumm und deshalb nicht dabei: ${silent.map((track) => TRACK_LABELS[track as TrackKind].name).join(", ")}.` : "";
+        this.brams.toast("Stems gespeichert", `${base}-stems.zip mit ${included.length} Spuren liegt jetzt in deinen Downloads.${skipped}`, "success");
+        return;
+      }
+      const wav = encodeWav(buffer, trimmedLength(buffer, musicFrames));
+      const fileName = `${base}.wav`;
       downloadBlob(new Blob([wav], { type: "audio/wav" }), fileName);
       if (status) status.textContent = "";
       this.brams.close("#export-dialog");
@@ -1066,6 +1149,12 @@ export class GrooveboxApp {
     const color = (this.root.querySelector<HTMLSelectElement>("#chord-color")?.value ?? "triad") as ChordColor;
     this.brams.close("#chord-dialog");
     this.store.dispatch({ type: "chord/update", bar: this.editingChordBar, value: { degree, inversion, color } });
+  }
+
+  private linkTitle(): string {
+    if (!this.link.enabled) return "Gleichtakt: mit Kitty in einem anderen Tab gemeinsam starten, stoppen und im Tempo bleiben";
+    if (this.linkPeers.length === 0) return "Gleichtakt an – öffne Kitty in einem zweiten Tab und schalte dort Gleichtakt ein";
+    return `Gleichtakt mit ${[...new Set(this.linkPeers.map((peer) => appName(peer.app)))].join(", ")}: wer startet, gibt das Tempo vor`;
   }
 
   private overlayDialogs(): string {
@@ -1151,7 +1240,7 @@ export class GrooveboxApp {
       this.store.dispatch({ type: "transport/update", update: { message: "MIDI-Start: klick einmal in die Groovebox, damit der Browser Ton erlaubt" } });
       return;
     }
-    await this.audio.start(this.store.getState().ui.selectedScene);
+    await this.startPlayback();
   }
 
   private queueMacro(index: number, value: number): void {
@@ -1277,4 +1366,8 @@ function clearShareFragment(): void {
 function formatClock(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+function appName(app: string): string {
+  return app === "kitty" ? "Kitty" : app === "groovebox" ? "Groovebox" : app;
 }

@@ -26,7 +26,8 @@ export interface PlayheadEvent extends SequencerPosition {
 
 export interface AudioEngine {
   initialize(): Promise<void>;
-  start(scene: number): Promise<void>;
+  /** `at` (milliseconds since the epoch) starts in step with a coupled app. */
+  start(scene: number, at?: number): Promise<void>;
   stop(): void;
   panic(): void;
   queueScene(scene: number): number | null;
@@ -59,6 +60,8 @@ export interface PerformanceState {
 export interface EngineOptions {
   /** Renders inside Tone.Offline: no context-state checks, meters or draw callbacks. */
   offline?: boolean;
+  /** Offline only: each track's stereo output on its own channel pair instead of the master mix. */
+  stems?: boolean;
 }
 
 /** What an offline render plays: the start scene, the chain setting and the number of sixteenth steps. */
@@ -110,7 +113,7 @@ export class ToneAudioEngine implements AudioEngine {
     this.emitStatus("idle", "Audio bereit");
   }
 
-  async start(scene: number): Promise<void> {
+  async start(scene: number, at?: number): Promise<void> {
     try {
       await this.initialize();
       if (Tone.getContext().state !== "running") return;
@@ -121,7 +124,7 @@ export class ToneAudioEngine implements AudioEngine {
       this.clock.start(scene);
       this.applyProject();
       this.scheduleId = transport.scheduleRepeat((time) => this.tick(time), "16n");
-      transport.start("+0.05");
+      transport.start(at === undefined ? "+0.05" : contextTimeAt(at));
       this.emitStatus("playing", "Wiedergabe läuft");
     } catch (error) {
       this.emitStatus("error", error instanceof Error ? error.message : "Audio konnte nicht gestartet werden");
@@ -210,11 +213,13 @@ export class ToneAudioEngine implements AudioEngine {
   }
 
   private async createGraph(): Promise<void> {
-    const master = createMasterGraph();
+    // Stems skip the master: its output goes nowhere and each strip feeds its own channel pair.
+    const master = createMasterGraph(this.options.stems ? new Tone.Gain(0) : undefined);
     const strips = {} as Record<TrackKind, TrackGraph>;
     this.master = master;
     for (const track of TRACK_KINDS) strips[track] = createTrackGraph(track, master.input);
     this.strips = strips;
+    if (this.options.stems) connectStems(TRACK_KINDS.map((track) => strips[track].channelFader));
     await Promise.all(Object.values(strips).map((strip) => strip.ready));
     if (this.strips !== strips || this.master !== master) throw new Error("Audio-Vorbereitung wurde abgebrochen");
     this.prepareSelectedVoiceBanks();
@@ -460,4 +465,31 @@ function zeroTrackPeaks(): Record<TrackKind, number> {
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+/**
+ * Maps a wall-clock time (milliseconds since the epoch) onto this context's
+ * clock via its output timestamp, so two tabs on the same audio device sound
+ * at the same moment. Times already past start as soon as possible.
+ */
+export function contextTimeAt(epochMs: number): number {
+  const raw = Tone.getContext().rawContext as unknown as AudioContext;
+  const stamp = typeof raw.getOutputTimestamp === "function" ? raw.getOutputTimestamp() : null;
+  const target = stamp?.contextTime !== undefined && stamp.performanceTime
+    ? stamp.contextTime + (epochMs - (performance.timeOrigin + stamp.performanceTime)) / 1000
+    : raw.currentTime + (epochMs - (performance.timeOrigin + performance.now())) / 1000;
+  return Math.max(raw.currentTime + 0.03, target);
+}
+
+/** Routes each stereo output to its own channel pair of the (offline) destination. */
+function connectStems(outputs: readonly Tone.ToneAudioNode[]): void {
+  const raw = Tone.getContext().rawContext;
+  const merger = raw.createChannelMerger(outputs.length * 2);
+  outputs.forEach((output, index) => {
+    const splitter = raw.createChannelSplitter(2);
+    Tone.connect(output, splitter as unknown as AudioNode);
+    splitter.connect(merger, 0, index * 2);
+    splitter.connect(merger, 1, index * 2 + 1);
+  });
+  merger.connect(raw.destination);
 }

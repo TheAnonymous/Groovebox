@@ -1,11 +1,20 @@
 import * as Tone from "tone";
 import type { ProjectV2 } from "../domain/types";
+import { TRACK_KINDS } from "../domain/types";
 import { ToneAudioEngine, type RenderPlan } from "./engine";
 
 export const RENDER_SAMPLE_RATE = 44_100;
 /** Room for pads, echoes and reverb to ring out after the last step. */
 export const RENDER_TAIL_SECONDS = 5;
 const STEPS_PER_PASS = 64;
+
+export interface RenderOptions {
+  /** Each track on its own channel pair, before the master bus (for mixing elsewhere). */
+  stems?: boolean;
+}
+
+/** Channel pairs of a stems render, in track order. */
+export const STEM_CHANNELS = TRACK_KINDS.length * 2;
 
 export type ExportMode = { kind: "arc" } | { kind: "scene"; scene: number };
 
@@ -34,17 +43,18 @@ const RENDER_CHUNK_SECONDS = 2;
  * cost grows with the square of the length. Here the renderer suspends every
  * two seconds and the clock only schedules the next stretch, like live play.
  */
-export async function renderProject(project: ProjectV2, mode: ExportMode, onProgress?: (fraction: number) => void): Promise<AudioBuffer> {
+export async function renderProject(project: ProjectV2, mode: ExportMode, onProgress?: (fraction: number) => void, options: RenderOptions = {}): Promise<AudioBuffer> {
   const plan = renderPlan(project, mode);
   const duration = planSeconds(project, plan) + RENDER_TAIL_SECONDS;
+  const channels = options.stems ? STEM_CHANNELS : 2;
   // Firefox cannot suspend an offline render; it renders in one go, as Tone.Offline does.
-  if (typeof OfflineAudioContext.prototype.suspend !== "function") return renderAtOnce(project, plan, duration, onProgress);
-  const native = new OfflineAudioContext(2, Math.ceil(duration * RENDER_SAMPLE_RATE), RENDER_SAMPLE_RATE);
+  if (typeof OfflineAudioContext.prototype.suspend !== "function") return renderAtOnce(project, plan, duration, channels, options, onProgress);
+  const native = new OfflineAudioContext(channels, Math.ceil(duration * RENDER_SAMPLE_RATE), RENDER_SAMPLE_RATE);
   const context = new Tone.OfflineContext(native as never);
   const original = Tone.getContext();
   Tone.setContext(context);
   try {
-    const engine = new ToneAudioEngine(project, { offline: true });
+    const engine = new ToneAudioEngine(project, { offline: true, stems: options.stems === true });
     await engine.scheduleOffline(plan);
     Tone.getTransport().start(0);
   } finally {
@@ -83,12 +93,12 @@ export async function renderProject(project: ProjectV2, mode: ExportMode, onProg
   return buffer;
 }
 
-async function renderAtOnce(project: ProjectV2, plan: RenderPlan, duration: number, onProgress?: (fraction: number) => void): Promise<AudioBuffer> {
+async function renderAtOnce(project: ProjectV2, plan: RenderPlan, duration: number, channels: number, options: RenderOptions, onProgress?: (fraction: number) => void): Promise<AudioBuffer> {
   const original = Tone.getContext();
-  const context = new Tone.OfflineContext(2, duration, RENDER_SAMPLE_RATE);
+  const context = new Tone.OfflineContext(channels, duration, RENDER_SAMPLE_RATE);
   Tone.setContext(context);
   try {
-    const engine = new ToneAudioEngine(project, { offline: true });
+    const engine = new ToneAudioEngine(project, { offline: true, stems: options.stems === true });
     await engine.scheduleOffline(plan);
     Tone.getTransport().start(0);
   } catch (error) {

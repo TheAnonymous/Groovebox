@@ -962,7 +962,12 @@ kbd {
 }
 
 /* Help, MIDI and first-visit tour */
-.gb-midi-button { display: inline-flex; align-items: center; gap: 0.4rem; }
+.gb-midi-button, .gb-link-button { display: inline-flex; align-items: center; gap: 0.4rem; }
+.gb-link-led { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--gb-rule); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.2); }
+.gb-link-led[data-state="waiting"] { background: var(--gb-amber); }
+.gb-link-led[data-state="linked"] { background: var(--gb-cyan); box-shadow: 0 0 0.4rem var(--gb-cyan); }
+.gb-link-button[aria-pressed="true"] { border-color: var(--gb-cyan-dark); }
+.gb-export-stems { margin-top: 0.4rem; padding-top: 0.6rem; border-top: 1px solid var(--gb-rule); }
 .gb-midi-led { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--gb-rule); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.2); }
 .gb-midi-led[data-state="ready"] { background: var(--gb-cyan); box-shadow: 0 0 0.4rem var(--gb-cyan); }
 .gb-midi-led[data-state="denied"], .gb-midi-led[data-state="error"] { background: var(--gb-red); }

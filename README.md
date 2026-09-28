@@ -79,6 +79,24 @@ dieselbe Engine wie die Wiedergabe, schneller als in Echtzeit. **Link teilen**
 packt das Set komprimiert in den Teil der Adresse hinter `#`; er wird nie an den
 Server geschickt, und wer ihn öffnet, übernimmt eine eigene Kopie.
 
+**Im Raster:** Jeder Step hat eine **Chance** (100, 75, 50 oder 25 %), die bei
+jedem Durchlauf neu würfelt, und Drums, Bass und Lead eine **Wiederholung**
+(2–4 schnelle Schläge im Step). Jede Spur kann eine eigene **Spurlänge**
+bekommen (12–60 Steps); sie läuft gegen die vier Takte der Szene weiter und
+verschiebt sich dabei (Polymetrik).
+
+**Live spielen:** Die Live-Leiste nimmt mit **Aufnahme** (`A`) auf, was du
+hörst, und speichert es als WAV. Mit **Live-Tasten** (`P`) schalten `1`–`5`
+Spuren am nächsten Takt stumm. Der **Filter** federt beim Loslassen zurück
+(`F` halten schließt, `Umschalt+F` öffnet). **Break → Drop** (`B` halten) nimmt
+Kick und Bass heraus und lässt einen Hochpass steigen; beim Loslassen kommt der
+Drop am nächsten Takt. Nichts davon landet im Projekt oder in der Undo-Liste.
+
+**Gleichtakt:** Ist Kitty in einem zweiten Tab offen und dort wie hier
+**Gleichtakt** an, starten und stoppen beide gemeinsam; wer startet, gibt das
+Tempo vor, die andere App verdoppelt oder halbiert es bei Bedarf. **Stems**
+im Export-Dialog liefern jede Spur als eigene WAV-Datei in einem ZIP.
+
 **MIDI** (Chrome, Edge; Firefox nach Nachfrage): Die Groovebox hört nur zu. Eine
 MIDI-Clock gibt Tempo, Start und Stop vor, ohne das Tempo des Sets zu ändern;
 die Regler CC 70–74 steuern die fünf Makros der gewählten Spur, jeder Regler

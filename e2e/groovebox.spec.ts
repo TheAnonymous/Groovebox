@@ -586,3 +586,48 @@ test("schaltet Spuren am Takt stumm und spielt Break, Drop und Filter", async ({
   await page.getByRole("button", { name: "Wiedergabe stoppen" }).click();
   await expect(bass).toHaveAttribute("aria-pressed", "false");
 });
+
+test("exportiert jede Spur einzeln als Stems-ZIP", async ({ page, browserName }, testInfo) => {
+  test.skip(browserName !== "chromium", "Stems werden in Chromium geprüft");
+  test.setTimeout(120_000);
+  await page.getByRole("button", { name: "4 Takte" }).click();
+  await page.getByRole("button", { name: "Als WAV exportieren" }).click();
+  await page.locator('input[name="export-mode"][value="scene"]').check();
+  await page.locator('input[name="export-stems"]').check();
+  const download = page.waitForEvent("download", { timeout: 100_000 });
+  await page.getByRole("button", { name: "WAV erstellen" }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("mein-erstes-set-auftakt-stems.zip");
+  const path = testInfo.outputPath(file.suggestedFilename());
+  await file.saveAs(path);
+  const { readFile } = await import("node:fs/promises");
+  const zip = await readFile(path);
+  expect(zip.readUInt32LE(0)).toBe(0x04034b50);
+  const names = zip.toString("latin1");
+  for (const name of ["01-drums.wav", "02-bass.wav", "03-chords.wav", "04-lead.wav", "05-pad.wav"]) expect(names).toContain(name);
+  expect(zip.readUInt32LE(zip.length - 22)).toBe(0x06054b50);
+  expect(zip.readUInt16LE(zip.length - 12)).toBe(5);
+});
+
+test("startet und stoppt zwei gekoppelte Tabs im Gleichtakt", async ({ page, context, browserName }) => {
+  test.skip(browserName !== "chromium", "Gleichtakt wird in Chromium geprüft");
+  test.setTimeout(60_000);
+  const partner = await context.newPage();
+  await partner.goto("./");
+  for (const tab of [page, partner]) {
+    await tab.getByRole("button", { name: "Gleichtakt" }).click();
+    await expect(tab.getByRole("button", { name: "Gleichtakt" })).toHaveAttribute("aria-pressed", "true");
+  }
+  await expect(page.locator(".gb-link-led")).toHaveAttribute("data-state", "linked");
+  await expect(partner.locator(".gb-link-led")).toHaveAttribute("data-state", "linked");
+
+  await page.getByRole("button", { name: "Wiedergabe starten" }).click();
+  await expect(partner.getByRole("button", { name: "Wiedergabe stoppen" })).toBeVisible({ timeout: 10_000 });
+  await expect(partner.locator("[data-audio-status]")).toHaveText("Gleichtakt mit Groovebox · 96 BPM");
+  await page.getByRole("button", { name: "Wiedergabe stoppen" }).click();
+  await expect(partner.getByRole("button", { name: "Wiedergabe starten" })).toBeVisible({ timeout: 5_000 });
+
+  await partner.getByRole("button", { name: "Gleichtakt" }).click();
+  await expect(page.locator(".gb-link-led")).toHaveAttribute("data-state", "waiting");
+  await partner.close();
+});
