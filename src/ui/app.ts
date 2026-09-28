@@ -1,5 +1,6 @@
 import type { AudioEngine } from "../audio/engine";
 import { chordLabel, currentRole, degreeLabels, effectiveDegree, KEY_LABELS, roleOptions, SCALE_LABELS } from "../domain/music";
+import { allowsRatchet, loopPosition, sceneSteps, stepChance, stepRatchet } from "../domain/patterns";
 import { SOUND_PRESET_DEFINITIONS } from "../domain/sound-presets";
 import type {
   Action,
@@ -25,10 +26,13 @@ import {
   DYNAMICS,
   DRUM_VOICES,
   INTENTS,
+  LOOP_LENGTHS,
   MACRO_KINDS,
+  RATCHETS,
   ROOT_NOTES,
   SCALES,
   SCENE_REPEATS,
+  STEP_CHANCES,
   STEP_LENGTHS,
   TRACK_KINDS,
   VARIATION_AMOUNTS,
@@ -72,6 +76,13 @@ const TRACK_LABELS: Record<TrackKind, { name: string; short: string; description
 
 const DYNAMIC_LABELS: Record<StepDynamics, string> = { ghost: "Leise", normal: "Normal", accent: "Betont" };
 const LENGTH_LABELS: Record<StepLength, string> = { short: "Kurz", normal: "Normal", long: "Lang" };
+const CHANCE_LABELS: Record<number, string> = { 1: "Immer", 0.75: "75 %", 0.5: "50 %", 0.25: "25 %" };
+const RATCHET_LABELS: Record<number, string> = { 1: "Einmal", 2: "2 × schnell", 3: "3 × schnell", 4: "4 × schnell" };
+
+function loopLabel(steps: number): string {
+  const bars = steps / 16;
+  return Number.isInteger(bars) ? `${steps} Steps · ${bars} ${bars === 1 ? "Takt" : "Takte"}` : `${steps} Steps`;
+}
 const INTENT_LABELS: Record<GrooveIntent, string> = {
   steady: "Stabil",
   driving: "Treibend",
@@ -210,6 +221,7 @@ export class GrooveboxApp {
           queuedScene: position.switched ? null : this.store.getState().transport.queuedScene,
           bar: position.bar,
           step: position.step,
+          pass: position.pass,
           peak: position.peak,
           trackPeaks: position.trackPeaks,
         },
@@ -253,6 +265,7 @@ export class GrooveboxApp {
                   </div>
                   <button class="bu-button bu-button--sm" type="button" data-action="vary" title="Verändert ${variationBarCount(state.ui.variationAmount)}; gesperrte Takte bleiben erhalten.">Variieren <kbd>V</kbd></button>
                   <button class="bu-button bu-button--sm" type="button" data-action="randomize" title="Erzeugt ein neues, instrumenttypisches Pattern. Gesperrte Takte bleiben erhalten.">Neu würfeln <kbd>R</kbd></button>
+                  <label class="gb-loop-field" title="Kürzere Spuren laufen gegen die vier Takte der Szene weiter und verschieben sich dabei."><span>Spurlänge</span><select class="bu-select" data-change="track-loop" data-focus-key="track-loop" aria-label="Spurlänge">${LOOP_LENGTHS.map((steps) => option(String(steps), loopLabel(steps), String(pattern.loopSteps ?? 64))).join("")}</select></label>
                 </div>
               </header>
               ${this.chords(state)}
@@ -418,14 +431,27 @@ export class GrooveboxApp {
 
   private stepButton(state: AppState, step: ReturnType<typeof selectedStep> extends infer _ ? NonNullable<ReturnType<typeof selectedStep>> : never, bar: number, index: number): string {
     const selected = state.ui.selectedStep?.bar === bar && state.ui.selectedStep.step === index;
-    const playing = state.transport.status === "playing" && state.transport.runningScene === state.ui.selectedScene && state.transport.bar === bar && state.transport.step === index;
+    const playhead = this.trackPlayhead(state);
+    const playing = playhead !== null && playhead.bar === bar && playhead.step === index;
+    const loopSteps = selectedPattern(state)?.loopSteps ?? 64;
+    const outside = bar * 16 + index >= loopSteps;
+    const chance = step.enabled ? stepChance(step) : 1;
+    const hits = step.enabled && allowsRatchet(state.ui.selectedTrack) ? stepRatchet(step) : 1;
+    const extras = `${chance < 1 ? `<small class="gb-step__chance">${Math.round(chance * 100)}</small>` : ""}${hits > 1 ? `<small class="gb-step__ratchet">×${hits}</small>` : ""}`;
+    const extraLabel = `${chance < 1 ? `, spielt zu ${Math.round(chance * 100)} %` : ""}${hits > 1 ? `, ${hits} schnelle Wiederholungen` : ""}${outside ? ", außerhalb der Spurlänge" : ""}`;
     const tone = !step.enabled ? "off" : step.dynamics === "accent" ? "accent" : step.variation >= 0.95 ? "variation" : step.dynamics === "ghost" ? "ghost" : "normal";
     const symbol = tone === "off" ? "—" : tone === "accent" ? "!" : tone === "variation" ? "≈" : tone === "ghost" ? "·" : "•";
     const stateLabel = tone === "off" ? "Aus" : tone === "accent" ? "Akzent" : tone === "variation" ? "Variation" : tone === "ghost" ? "Leise" : "Normal";
     const nextLabel = tone === "off" ? "Normal" : tone === "normal" || tone === "ghost" ? "Akzent" : tone === "accent" ? "Variation" : "Aus";
     const interactionLabel = selected ? `Ausgewählt. Erneuter Klick: ${nextLabel}.` : "Klick zum Auswählen.";
     const title = selected ? `${stateLabel} · Erneuter Klick: ${nextLabel}` : `${stateLabel} · Klick: Details auswählen`;
-    return `<button class="gb-step gb-step--${tone} ${selected ? "is-selected" : ""} ${playing ? "is-playing" : ""}" type="button" data-action="select-or-cycle-step" data-bar="${bar}" data-step="${index}" data-focus-key="step-${bar}-${index}" aria-pressed="${step.enabled}" aria-label="Takt ${bar + 1}, Step ${index + 1}: ${stateLabel}. ${interactionLabel}" title="${title}"><span>${symbol}</span></button>`;
+    return `<button class="gb-step gb-step--${tone} ${selected ? "is-selected" : ""} ${playing ? "is-playing" : ""} ${outside ? "is-outside" : ""}" type="button" data-action="select-or-cycle-step" data-bar="${bar}" data-step="${index}" data-focus-key="step-${bar}-${index}" aria-pressed="${step.enabled}" aria-label="Takt ${bar + 1}, Step ${index + 1}: ${stateLabel}${extraLabel}. ${interactionLabel}" title="${title}"><span>${symbol}</span>${extras}</button>`;
+  }
+
+  /** Where the selected track's own loop stands, or `null` when its scene is not playing. */
+  private trackPlayhead(state: AppState): { bar: number; step: number } | null {
+    if (state.transport.status !== "playing" || state.transport.runningScene !== state.ui.selectedScene) return null;
+    return loopPosition(selectedPattern(state)?.loopSteps, sceneSteps(state.transport));
   }
 
   private stepInspector(state: AppState, step: ReturnType<typeof selectedStep>, position: AppState["ui"]["selectedStep"]): string {
@@ -439,6 +465,11 @@ export class GrooveboxApp {
         ${!step.enabled ? "<p class=\"gb-inline-note\">Dieser Step ist aus. Klicke den ausgewählten Step im Raster erneut an, um ihn einzuschalten.</p>" : ""}
         <label class="bu-field"><span class="bu-field__label">Dynamik</span><select class="bu-select" data-change="step-dynamics" ${step.enabled ? "" : "disabled"}>${DYNAMICS.map((dynamic) => option(dynamic, DYNAMIC_LABELS[dynamic], step.dynamics)).join("")}</select><span class="bu-field__help">Wie deutlich dieser Schritt hörbar ist.</span></label>
         <label class="bu-field"><span class="bu-field__label">Länge</span><select class="bu-select" data-change="step-length" ${step.enabled ? "" : "disabled"}>${STEP_LENGTHS.map((length) => option(length, LENGTH_LABELS[length], step.length)).join("")}</select><span class="bu-field__help">Kurze Töne federn, lange Töne verbinden.</span></label>
+        <div class="gb-detail-pair">
+          <label class="bu-field"><span class="bu-field__label">Chance</span><select class="bu-select" data-change="step-probability" ${step.enabled ? "" : "disabled"}>${STEP_CHANCES.map((chance) => option(String(chance), CHANCE_LABELS[chance]!, String(stepChance(step)))).join("")}</select></label>
+          ${allowsRatchet(track) ? `<label class="bu-field"><span class="bu-field__label">Wiederholung</span><select class="bu-select" data-change="step-ratchet" ${step.enabled ? "" : "disabled"}>${RATCHETS.map((count) => option(String(count), RATCHET_LABELS[count]!, String(stepRatchet(step)))).join("")}</select></label>` : ""}
+        </div>
+        <span class="bu-field__help gb-detail-pair__help">Chance würfelt bei jedem Durchlauf neu; Wiederholungen teilen den Step in schnelle Schläge.</span>
         ${track === "drums" ? this.drumVoiceControls(step) : `<label class="bu-field"><span class="bu-field__label">Tonrolle</span><select class="bu-select" data-change="step-role" ${step.enabled ? "" : "disabled"}>${roleOptions(track).map((entry) => option(entry.value, entry.label, role!.value)).join("")}</select><span class="bu-field__help">Nur passende Skalentöne sind möglich.</span></label>`}
       </div></section>`;
   }
@@ -578,9 +609,8 @@ export class GrooveboxApp {
       playButton.innerHTML = `<span aria-hidden="true">${playing ? "■" : "▶"}</span> ${playing ? "Stop" : "Start"} <kbd>Leertaste</kbd>`;
     }
     this.root.querySelectorAll(".gb-step.is-playing").forEach((element) => element.classList.remove("is-playing"));
-    if (state.transport.status === "playing" && state.transport.runningScene === state.ui.selectedScene) {
-      this.root.querySelector(`.gb-step[data-bar="${state.transport.bar}"][data-step="${state.transport.step}"]`)?.classList.add("is-playing");
-    }
+    const playhead = this.trackPlayhead(state);
+    if (playhead) this.root.querySelector(`.gb-step[data-bar="${playhead.bar}"][data-step="${playhead.step}"]`)?.classList.add("is-playing");
     this.root.querySelectorAll<HTMLElement>(".gb-channel__meter").forEach((meter) => {
       const track = meter.dataset.meterTrack as TrackKind;
       const mix = state.project.mix.find((entry) => entry.instrument === track);
@@ -679,6 +709,9 @@ export class GrooveboxApp {
     else if (change === "track-volume") this.store.dispatch({ type: "mix/volume", track: input.dataset.track as TrackKind, value: Number(input.value) / 100 }, slider);
     else if (change === "step-dynamics") this.store.dispatch({ type: "step/dynamics", value: input.value as StepDynamics });
     else if (change === "step-length") this.store.dispatch({ type: "step/length", value: input.value as StepLength });
+    else if (change === "step-probability") this.store.dispatch({ type: "step/probability", value: Number(input.value) });
+    else if (change === "step-ratchet") this.store.dispatch({ type: "step/ratchet", value: Number(input.value) });
+    else if (change === "track-loop") this.store.dispatch({ type: "track/loop", value: Number(input.value) });
     else if (change === "step-role") {
       const role = roleOptions(this.store.getState().ui.selectedTrack).find((entry) => entry.value === input.value);
       if (role) this.store.dispatch({ type: "step/role", degreeOffset: role.degreeOffset, variation: role.variation });

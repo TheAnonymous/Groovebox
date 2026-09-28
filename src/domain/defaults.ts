@@ -209,6 +209,7 @@ export function createTransportState(): TransportState {
     queuedScene: null,
     bar: 0,
     step: 0,
+    pass: 0,
     peak: 0,
     trackPeaks: Object.fromEntries(TRACK_KINDS.map((track) => [track, 0])) as TransportState["trackPeaks"],
     message: "Bereit – Start aktiviert den Klang",

@@ -1,5 +1,5 @@
 import { createFactoryProject } from "./defaults";
-import { emptyStep, isAnchor } from "./patterns";
+import { allowsRatchet, emptyStep, isAnchor } from "./patterns";
 import type {
   BarPattern,
   ChordColor,
@@ -26,6 +26,9 @@ import {
   DYNAMICS,
   DRUM_VOICES,
   INTENTS,
+  LOOP_LENGTHS,
+  RATCHETS,
+  STEP_CHANCES,
   MAX_SWING,
   MAX_TEMPO,
   MIN_TEMPO,
@@ -99,6 +102,11 @@ function sanitizeStep(
   };
   if (legacy && track === "drums") clean.variation = 0;
   if (isAnchor(track, stepIndex, clean) && clean.dynamics === "ghost") clean.dynamics = "normal";
+  // Optional fields stay absent at their defaults, so older saves and files are unchanged.
+  const probability = STEP_CHANCES.find((chance) => chance === source.probability);
+  if (probability !== undefined && probability < 1) clean.probability = probability;
+  const ratchet = RATCHETS.find((count) => count === source.ratchet);
+  if (ratchet !== undefined && ratchet > 1 && allowsRatchet(track)) clean.ratchet = ratchet;
   return clean;
 }
 
@@ -133,6 +141,9 @@ function sanitizeTrack(value: unknown, fallback: TrackPattern, track: TrackKind,
       sanitizeBar(bars[index], fallback.bars[index]!, track, legacy),
     ),
     macros: sanitizeMacros(source.macros, fallback.macros),
+    ...(typeof source.loopSteps === "number" && (LOOP_LENGTHS as readonly number[]).includes(source.loopSteps) && source.loopSteps < 64
+      ? { loopSteps: source.loopSteps }
+      : {}),
   };
 }
 

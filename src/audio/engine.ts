@@ -1,5 +1,6 @@
 import * as Tone from "tone";
 import { chordNotes, scaleDegreeMidi } from "../domain/music";
+import { allowsRatchet, loopPosition, sceneSteps, stepChance, stepRatchet } from "../domain/patterns";
 import type { ProjectV2, Step, TrackKind } from "../domain/types";
 import { TRACK_KINDS } from "../domain/types";
 import { effectiveTrackGains } from "../store/store";
@@ -246,19 +247,28 @@ export class ToneAudioEngine implements AudioEngine {
 
   private triggerTrack(track: TrackKind, position: SequencerPosition, time: number): void {
     const pattern = this.patternFor(position.scene, track);
-    const step = pattern?.bars[position.bar]?.steps[position.step];
+    // A track with its own loop length runs on against the scene; harmony follows the scene's bar.
+    const at = loopPosition(pattern?.loopSteps, sceneSteps(position));
+    const step = pattern?.bars[at.bar]?.steps[at.step];
     const chord = this.project.scenes[position.scene]?.chords[position.bar];
     if (!pattern || !step?.enabled || !chord || effectiveTrackGains(this.project)[track] <= 0) return;
+    if (stepChance(step) < 1 && Math.random() >= stepChance(step)) return;
     const velocity = dynamicsVelocity(step) * densityBodyGain(track, pattern.macros.density);
     const bank = this.bankFor(track);
-    if (track === "drums") {
-      bank.trigger([], step, time, velocity);
-    } else if (track === "bass") {
-      bank.trigger([scaleDegreeMidi(this.project.key, this.project.scale, chord.degree, step.degreeOffset, 2)], step, time, velocity);
-    } else if (track === "lead") {
-      bank.trigger([scaleDegreeMidi(this.project.key, this.project.scale, chord.degree, step.degreeOffset, 4)], step, time, velocity);
-    } else {
-      bank.trigger(chordNotes(this.project.key, this.project.scale, chord, 3).slice(0, 4), step, time, velocity);
+    const notes = track === "drums" ? []
+      : track === "bass" ? [scaleDegreeMidi(this.project.key, this.project.scale, chord.degree, step.degreeOffset, 2)]
+        : track === "lead" ? [scaleDegreeMidi(this.project.key, this.project.scale, chord.degree, step.degreeOffset, 4)]
+          : chordNotes(this.project.key, this.project.scale, chord, 3).slice(0, 4);
+    const hits = allowsRatchet(track) ? stepRatchet(step) : 1;
+    if (hits === 1) {
+      bank.trigger(notes, step, time, velocity);
+      return;
+    }
+    // A ratchet splits the sixteenth into even, slightly softer repeats with short gates.
+    const spacing = 60 / (this.tempoOverride ?? this.project.tempo) / 4 / hits;
+    const short: Step = { ...step, length: "short" };
+    for (let hit = 0; hit < hits; hit += 1) {
+      bank.trigger(notes, short, time + hit * spacing, velocity * (hit === 0 ? 1 : 0.84), spacing * 0.8);
     }
   }
 

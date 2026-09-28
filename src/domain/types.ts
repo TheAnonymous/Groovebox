@@ -35,6 +35,14 @@ export const VARIATION_AMOUNTS = ["subtle", "lively", "bold"] as const;
 /** How often each scene repeats before the scene chain moves on (4 bars per pass). */
 export const SCENE_REPEATS = [1, 2, 4] as const;
 export const DRUM_VOICES = ["kick", "snare", "clap", "closedHat", "openHat", "tom"] as const;
+export const STEPS_PER_PASS = BARS_PER_SCENE * STEPS_PER_BAR;
+/** How likely an enabled step plays on each pass. */
+export const STEP_CHANCES = [1, 0.75, 0.5, 0.25] as const;
+/** Hits a step splits into (a ratchet of 2–4 fast repeats). */
+export const RATCHETS = [1, 2, 3, 4] as const;
+/** Loop lengths a track can run at against the four-bar scene (polymeter). */
+export const LOOP_LENGTHS = [64, 60, 56, 48, 32, 30, 28, 16, 15, 14, 12] as const;
+export const RATCHET_TRACKS = ["drums", "bass", "lead"] as const;
 
 export const SOUND_PRESETS = {
   drums: ["neon84", "pressure", "night"],
@@ -66,6 +74,10 @@ export interface Step {
   degreeOffset: number;
   length: StepLength;
   drumVoices: DrumVoice[];
+  /** Chance to play (0.25–0.75); absent means always. */
+  probability?: number;
+  /** Fast repeats within the step (2–4); absent means one hit. */
+  ratchet?: number;
 }
 
 export interface BarPattern {
@@ -86,6 +98,8 @@ export interface TrackPattern {
   contour: PhraseContour;
   bars: BarPattern[];
   macros: TrackMacros;
+  /** Steps before the track loops (1–63); absent means all 64. */
+  loopSteps?: number;
 }
 
 export interface ChordSlot {
@@ -154,6 +168,8 @@ export interface TransportState {
   queuedScene: number | null;
   bar: number;
   step: number;
+  /** Completed passes through the running scene, for tracks with their own loop length. */
+  pass: number;
   peak: number;
   trackPeaks: Record<TrackKind, number>;
   message: string;

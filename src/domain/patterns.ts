@@ -7,7 +7,7 @@ import type {
   TrackPattern,
   VariationAmount,
 } from "./types";
-import { BARS_PER_SCENE, STEPS_PER_BAR } from "./types";
+import { BARS_PER_SCENE, RATCHET_TRACKS, STEPS_PER_BAR, STEPS_PER_PASS } from "./types";
 import { safeDegreeOffset } from "./music";
 
 type Random = () => number;
@@ -63,6 +63,30 @@ export function emptyStep(): Step {
     length: "normal",
     drumVoices: [],
   };
+}
+
+/** Where a track with its own loop length stands after `total` sixteenths of the running scene. */
+export function loopPosition(loopSteps: number | undefined, total: number): { bar: number; step: number } {
+  const length = Math.max(1, Math.min(STEPS_PER_PASS, Math.round(loopSteps ?? STEPS_PER_PASS)));
+  const index = ((Math.round(total) % length) + length) % length;
+  return { bar: Math.floor(index / STEPS_PER_BAR), step: index % STEPS_PER_BAR };
+}
+
+/** Sixteenths since the running scene started. */
+export function sceneSteps(position: { pass: number; bar: number; step: number }): number {
+  return position.pass * STEPS_PER_PASS + position.bar * STEPS_PER_BAR + position.step;
+}
+
+export function stepChance(step: Step): number {
+  return step.probability ?? 1;
+}
+
+export function stepRatchet(step: Step): number {
+  return step.ratchet ?? 1;
+}
+
+export function allowsRatchet(track: TrackKind): boolean {
+  return (RATCHET_TRACKS as readonly TrackKind[]).includes(track);
 }
 
 export function emptyBar(): BarPattern {

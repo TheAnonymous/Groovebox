@@ -7,7 +7,8 @@ import type { DrumVoice, SoundPresetId, Step, TrackKind } from "../domain/types"
 export interface VoiceBank {
   readonly track: TrackKind;
   readonly preset: SoundPresetId;
-  trigger(notes: number[], step: Step, time: number, velocity: number): void;
+  /** `gateLimit` caps a note's gate, so the hits of a ratchet stay apart. */
+  trigger(notes: number[], step: Step, time: number, velocity: number, gateLimit?: number): void;
   release(time?: number): void;
   dispose(): void;
 }
@@ -277,8 +278,9 @@ function createMelodicBank(
   return {
     track,
     preset,
-    trigger: (notes, step, time, velocity) => {
-      const expression = melodicExpression(definition, step, velocity);
+    trigger: (notes, step, time, velocity, gateLimit) => {
+      const full = melodicExpression(definition, step, velocity);
+      const expression = gateLimit === undefined ? full : { ...full, gateSeconds: Math.min(full.gateSeconds, gateLimit) };
       voices.forEach((voice, index) => {
         const note = notes[index];
         if (note === undefined) return;

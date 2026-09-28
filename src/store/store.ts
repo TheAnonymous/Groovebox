@@ -1,5 +1,6 @@
 import { createTransportState, createUiState } from "../domain/defaults";
 import {
+  allowsRatchet,
   clearPattern,
   cycleStep,
   isAnchor,
@@ -26,7 +27,7 @@ import type {
   TrackKind,
   VariationAmount,
 } from "../domain/types";
-import { SCENE_REPEATS, SOUND_PRESETS } from "../domain/types";
+import { LOOP_LENGTHS, RATCHETS, SCENE_REPEATS, SOUND_PRESETS, STEP_CHANCES, STEPS_PER_PASS } from "../domain/types";
 
 export type Action =
   | { type: "ui/select-scene"; scene: number }
@@ -54,6 +55,9 @@ export type Action =
   | { type: "step/length"; value: StepLength }
   | { type: "step/role"; degreeOffset: number; variation?: number }
   | { type: "step/drum-voice"; voice: DrumVoice }
+  | { type: "step/probability"; value: number }
+  | { type: "step/ratchet"; value: number }
+  | { type: "track/loop"; value: number }
   | { type: "track/macro"; macro: MacroKind; value: number }
   | { type: "track/intent"; value: GrooveIntent }
   | { type: "track/contour"; value: PhraseContour }
@@ -242,6 +246,30 @@ export class GrooveboxStore {
         }
         if (!canAddDrumVoice(step.drumVoices, action.voice)) return false;
         step.drumVoices = sanitizeDrumVoices([...step.drumVoices, action.voice], step.drumVoices);
+        return true;
+      }
+      case "step/probability": {
+        const step = selectedStep(this.state);
+        if (!step?.enabled || !(STEP_CHANCES as readonly number[]).includes(action.value)) return false;
+        if ((step.probability ?? 1) === action.value) return false;
+        if (action.value >= 1) delete step.probability;
+        else step.probability = action.value;
+        return true;
+      }
+      case "step/ratchet": {
+        const step = selectedStep(this.state);
+        if (!step?.enabled || !allowsRatchet(ui.selectedTrack) || !(RATCHETS as readonly number[]).includes(action.value)) return false;
+        if ((step.ratchet ?? 1) === action.value) return false;
+        if (action.value <= 1) delete step.ratchet;
+        else step.ratchet = action.value;
+        return true;
+      }
+      case "track/loop": {
+        const pattern = selectedPattern(this.state);
+        if (!pattern || !(LOOP_LENGTHS as readonly number[]).includes(action.value)) return false;
+        if ((pattern.loopSteps ?? STEPS_PER_PASS) === action.value) return false;
+        if (action.value >= STEPS_PER_PASS) delete pattern.loopSteps;
+        else pattern.loopSteps = action.value;
         return true;
       }
       case "track/macro": {
