@@ -1,47 +1,10 @@
 import * as Tone from "tone";
+import processorUrl from "./recorder-processor.js?url&no-inline";
 
 /** Longest live recording: 15 minutes of 16-bit stereo stays around 170 MB in memory. */
 export const MAX_RECORDING_SECONDS = 15 * 60;
 
 const PROCESSOR = "musik-master-recorder";
-const PROCESSOR_SOURCE = `
-class MasterRecorder extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.size = 8192;
-    this.left = new Float32Array(this.size);
-    this.right = new Float32Array(this.size);
-    this.filled = 0;
-    this.recording = true;
-    this.port.onmessage = (event) => {
-      if (event.data !== "stop") return;
-      if (this.filled > 0) this.port.postMessage({ left: this.left.slice(0, this.filled), right: this.right.slice(0, this.filled) });
-      this.recording = false;
-      this.port.postMessage({ done: true });
-    };
-  }
-  process(inputs) {
-    if (!this.recording) return false;
-    const input = inputs[0] || [];
-    const left = input[0];
-    const right = input[1] || input[0];
-    const frames = left ? left.length : 128;
-    for (let index = 0; index < frames; index += 1) {
-      this.left[this.filled] = left ? left[index] : 0;
-      this.right[this.filled] = right ? right[index] : 0;
-      this.filled += 1;
-      if (this.filled === this.size) {
-        this.port.postMessage({ left: this.left, right: this.right }, [this.left.buffer, this.right.buffer]);
-        this.left = new Float32Array(this.size);
-        this.right = new Float32Array(this.size);
-        this.filled = 0;
-      }
-    }
-    return true;
-  }
-}
-registerProcessor("${PROCESSOR}", MasterRecorder);
-`;
 
 const loadedContexts = new WeakSet<object>();
 
@@ -78,12 +41,7 @@ export class MasterRecorder {
     if (this.node) return;
     const context = Tone.getContext();
     if (!loadedContexts.has(context)) {
-      const url = URL.createObjectURL(new Blob([PROCESSOR_SOURCE], { type: "text/javascript" }));
-      try {
-        await context.addAudioWorkletModule(url);
-      } finally {
-        URL.revokeObjectURL(url);
-      }
+      await context.addAudioWorkletModule(processorUrl);
       loadedContexts.add(context);
     }
     this.sampleRate = context.sampleRate;
