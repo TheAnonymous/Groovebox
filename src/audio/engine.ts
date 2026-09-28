@@ -7,6 +7,7 @@ import { effectiveTrackGains } from "../store/store";
 import { applyTrackMacros, createMasterGraph, createTrackGraph, type MasterGraph, type TrackGraph } from "./graph";
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
 import { createVoiceBank, MAX_VOICE_BANKS, type VoiceBank } from "./voices";
+import { MasterRecorder, type Recording } from "./recorder";
 
 export { drumLayerGain, MAX_VOICE_BANKS, VOICE_LIMITS } from "./voices";
 
@@ -31,10 +32,28 @@ export interface AudioEngine {
   queueScene(scene: number): number | null;
   setSceneChain(repeats: number | null): void;
   setTempoOverride(bpm: number | null): void;
+  setPerformanceMute(track: TrackKind, muted: boolean): void;
+  setBreak(active: boolean): void;
+  setPerformanceFilter(value: number): void;
+  onPerformance(listener: (state: PerformanceState) => void): () => void;
+  startRecording(): Promise<void>;
+  stopRecording(): Promise<Recording>;
+  readonly recordingSeconds: number;
   syncProject(project: ProjectV2): void;
   onPlayhead(listener: (position: PlayheadEvent) => void): () => void;
   onStatus(listener: (status: AudioStatusEvent) => void): () => void;
   dispose(): void;
+}
+
+/** Live-only layer on top of the project: nothing here is saved or undoable. */
+export interface PerformanceState {
+  /** Tracks silenced right now. */
+  muted: TrackKind[];
+  /** Tracks whose mute changes at the next bar line. */
+  pending: TrackKind[];
+  breakActive: boolean;
+  /** The break ends (the drop) at the next bar line. */
+  dropPending: boolean;
 }
 
 export interface EngineOptions {
@@ -62,6 +81,12 @@ export class ToneAudioEngine implements AudioEngine {
   private measuredTrackPeaks = zeroTrackPeaks();
   private readonly clock = new BarQueuedTransport();
   private tempoOverride: number | null = null;
+  private readonly performanceMuted = new Set<TrackKind>();
+  private readonly performancePending = new Map<TrackKind, boolean>();
+  private breakActive = false;
+  private dropPending = false;
+  private readonly performanceListeners = new Set<(state: PerformanceState) => void>();
+  private readonly recorder = new MasterRecorder(() => undefined);
   private readonly playheadListeners = new Set<(position: PlayheadEvent) => void>();
   private readonly statusListeners = new Set<(status: AudioStatusEvent) => void>();
 
@@ -70,6 +95,8 @@ export class ToneAudioEngine implements AudioEngine {
   }
 
   async initialize(): Promise<void> {
+    // Already prepared (e.g. recording or MIDI while music plays): report nothing new.
+    if (this.initialized && Tone.getContext().state === "running") return;
     this.emitStatus("starting", "Audio wird vorbereitet …");
     await Tone.start();
     if (!this.initialized) {
@@ -102,6 +129,7 @@ export class ToneAudioEngine implements AudioEngine {
   }
 
   stop(): void {
+    this.resetPerformance();
     const transport = Tone.getTransport();
     transport.stop();
     if (this.scheduleId !== null) transport.clear(this.scheduleId);
@@ -223,6 +251,50 @@ export class ToneAudioEngine implements AudioEngine {
     }
   }
 
+  setPerformanceMute(track: TrackKind, muted: boolean): void {
+    if (this.performanceMuted.has(track) === muted) this.performancePending.delete(track);
+    else this.performancePending.set(track, muted);
+    // Without a running transport there is no bar line to wait for.
+    if (this.scheduleId === null) this.applyPendingMutes();
+    this.emitPerformance();
+  }
+
+  setBreak(active: boolean): void {
+    const now = Tone.now();
+    if (active) {
+      this.breakActive = true;
+      this.dropPending = false;
+      this.master?.performance.startRise(now, (2 * 240) / (this.tempoOverride ?? this.project.tempo));
+    } else if (this.breakActive) {
+      this.dropPending = true;
+      if (this.scheduleId === null) this.drop(now);
+    }
+    this.emitPerformance();
+  }
+
+  setPerformanceFilter(value: number): void {
+    this.master?.performance.setFilter(value);
+  }
+
+  onPerformance(listener: (state: PerformanceState) => void): () => void {
+    this.performanceListeners.add(listener);
+    return () => this.performanceListeners.delete(listener);
+  }
+
+  async startRecording(): Promise<void> {
+    if (!this.initialized) await this.initialize();
+    if (Tone.getContext().state !== "running") throw new Error("Audio ist pausiert");
+    await this.recorder.start(Tone.getDestination());
+  }
+
+  stopRecording(): Promise<Recording> {
+    return this.recorder.stop();
+  }
+
+  get recordingSeconds(): number {
+    return this.recorder.active ? this.recorder.seconds : 0;
+  }
+
   private tick(time: number): void {
     if (!this.options.offline && Tone.getContext().state !== "running") {
       this.emitStatus("suspended", "Audio wurde vom Browser pausiert – Start erneut anklicken");
@@ -230,6 +302,11 @@ export class ToneAudioEngine implements AudioEngine {
     }
     const position = this.clock.next();
     if (position.switched) this.applyProject();
+    if (position.step === 0 && (this.performancePending.size > 0 || this.dropPending)) {
+      this.applyPendingMutes();
+      if (this.dropPending) this.drop(time);
+      Tone.getDraw().schedule(() => this.emitPerformance(), time);
+    }
     for (const track of TRACK_KINDS) {
       try {
         this.triggerTrack(track, position, time);
@@ -252,21 +329,25 @@ export class ToneAudioEngine implements AudioEngine {
     const step = pattern?.bars[at.bar]?.steps[at.step];
     const chord = this.project.scenes[position.scene]?.chords[position.bar];
     if (!pattern || !step?.enabled || !chord || effectiveTrackGains(this.project)[track] <= 0) return;
+    if (this.performanceMuted.has(track) || (this.breakActive && track === "bass")) return;
     if (stepChance(step) < 1 && Math.random() >= stepChance(step)) return;
+    // The break takes the kick out; the rest of the kit keeps the pulse.
+    const played = this.breakActive && track === "drums" ? { ...step, drumVoices: step.drumVoices.filter((voice) => voice !== "kick") } : step;
+    if (played.drumVoices.length === 0 && track === "drums") return;
     const velocity = dynamicsVelocity(step) * densityBodyGain(track, pattern.macros.density);
     const bank = this.bankFor(track);
     const notes = track === "drums" ? []
       : track === "bass" ? [scaleDegreeMidi(this.project.key, this.project.scale, chord.degree, step.degreeOffset, 2)]
         : track === "lead" ? [scaleDegreeMidi(this.project.key, this.project.scale, chord.degree, step.degreeOffset, 4)]
           : chordNotes(this.project.key, this.project.scale, chord, 3).slice(0, 4);
-    const hits = allowsRatchet(track) ? stepRatchet(step) : 1;
+    const hits = allowsRatchet(track) ? stepRatchet(played) : 1;
     if (hits === 1) {
-      bank.trigger(notes, step, time, velocity);
+      bank.trigger(notes, played, time, velocity);
       return;
     }
     // A ratchet splits the sixteenth into even, slightly softer repeats with short gates.
     const spacing = 60 / (this.tempoOverride ?? this.project.tempo) / 4 / hits;
-    const short: Step = { ...step, length: "short" };
+    const short: Step = { ...played, length: "short" };
     for (let hit = 0; hit < hits; hit += 1) {
       bank.trigger(notes, short, time + hit * spacing, velocity * (hit === 0 ? 1 : 0.84), spacing * 0.8);
     }
@@ -297,6 +378,38 @@ export class ToneAudioEngine implements AudioEngine {
       }
       this.bankFor(track);
     }
+  }
+
+  private applyPendingMutes(): void {
+    for (const [track, muted] of this.performancePending) {
+      if (muted) this.performanceMuted.add(track);
+      else this.performanceMuted.delete(track);
+    }
+    this.performancePending.clear();
+  }
+
+  private drop(time: number): void {
+    this.breakActive = false;
+    this.dropPending = false;
+    this.master?.performance.endRise(time);
+  }
+
+  private resetPerformance(): void {
+    this.performanceMuted.clear();
+    this.performancePending.clear();
+    if (this.breakActive || this.dropPending) this.drop(Tone.now());
+    this.master?.performance.setFilter(0);
+    this.emitPerformance();
+  }
+
+  private emitPerformance(): void {
+    const state: PerformanceState = {
+      muted: [...this.performanceMuted],
+      pending: [...this.performancePending.keys()],
+      breakActive: this.breakActive,
+      dropPending: this.dropPending,
+    };
+    for (const listener of this.performanceListeners) listener(state);
   }
 
   private patternFor(scene: number, track: TrackKind) {

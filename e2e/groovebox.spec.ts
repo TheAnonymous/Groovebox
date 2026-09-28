@@ -528,3 +528,61 @@ test("exportiert eine Szene in jedem Browser als WAV", async ({ page }, testInfo
   for (let offset = 44; offset < wav.length; offset += 2) peak = Math.max(peak, Math.abs(wav.readInt16LE(offset)));
   expect(peak).toBeGreaterThan(3_000);
 });
+
+test("nimmt das Live-Spiel als WAV auf", async ({ page, browserName }, testInfo) => {
+  test.skip(browserName !== "chromium", "Aufnahme wird in Chromium geprüft");
+  test.setTimeout(60_000);
+  await page.locator("body").press("a");
+  await expect(page.getByRole("button", { name: "Wiedergabe stoppen" })).toBeVisible({ timeout: 10_000 });
+  const record = page.locator('[data-action="toggle-record"]');
+  await expect(record).toHaveAttribute("aria-pressed", "true");
+  await expect(record.locator("output")).not.toHaveText("0:00", { timeout: 5_000 });
+  await page.waitForTimeout(1_500);
+  const download = page.waitForEvent("download");
+  await page.locator("body").press("a");
+  const file = await download;
+  expect(file.suggestedFilename()).toMatch(/^mein-erstes-set-live-\d{4}-\d{2}-\d{2}-\d{4}\.wav$/);
+  const path = testInfo.outputPath("live.wav");
+  await file.saveAs(path);
+  const { readFile } = await import("node:fs/promises");
+  const wav = await readFile(path);
+  expect(wav.subarray(0, 4).toString()).toBe("RIFF");
+  const sampleRate = wav.readUInt32LE(24);
+  expect(wav.readUInt32LE(40) / (sampleRate * 4)).toBeGreaterThan(1.5);
+  let peak = 0;
+  for (let offset = 44; offset < wav.length; offset += 2) peak = Math.max(peak, Math.abs(wav.readInt16LE(offset)));
+  expect(peak).toBeGreaterThan(2_000);
+  await expect(record).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".bu-toast")).toContainText("Aufnahme gespeichert");
+});
+
+test("schaltet Spuren am Takt stumm und spielt Break, Drop und Filter", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "Live-Spiel wird in Chromium geprüft");
+  test.setTimeout(60_000);
+  await page.getByRole("button", { name: "Wiedergabe starten" }).click();
+  await expect(page.getByRole("button", { name: "Wiedergabe stoppen" })).toBeVisible({ timeout: 10_000 });
+  await page.locator("body").press("p");
+  await expect(page.locator('[data-action="toggle-live-keys"]')).toHaveAttribute("aria-pressed", "true");
+  await page.locator("body").press("2");
+  const bass = page.locator('.gb-live-mute[data-track="bass"]');
+  await expect(bass).toHaveAttribute("data-pending", "");
+  await expect(bass).toHaveAttribute("aria-pressed", "true", { timeout: 6_000 });
+  await expect(bass).not.toHaveAttribute("data-pending", "");
+  await expect(page.locator(".gb-step").first()).toBeVisible();
+
+  const breakButton = page.locator("[data-perf-break]");
+  await page.keyboard.down("b");
+  await expect(breakButton).toHaveAttribute("data-state", "break");
+  await page.keyboard.up("b");
+  await expect(breakButton).toHaveAttribute("data-state", "drop");
+  await expect(breakButton).toHaveAttribute("data-state", "idle", { timeout: 6_000 });
+
+  const filter = page.locator("[data-perf-filter]");
+  await page.keyboard.down("f");
+  await expect.poll(async () => Number(await filter.inputValue())).toBeLessThan(-30);
+  await page.keyboard.up("f");
+  await expect(filter).toHaveValue("0");
+
+  await page.getByRole("button", { name: "Wiedergabe stoppen" }).click();
+  await expect(bass).toHaveAttribute("aria-pressed", "false");
+});

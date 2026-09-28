@@ -39,7 +39,9 @@ import {
 } from "../domain/types";
 import { MAX_PROJECTS, type ProjectCatalog } from "../catalog";
 import { planSeconds, renderPlan, renderProject, type ExportMode } from "../audio/render";
-import { encodeWav, trimmedLength } from "../audio/wav";
+import { audibleRange, encodePcm16Wav, encodeWav, trimmedLength } from "../audio/wav";
+import { MAX_RECORDING_SECONDS } from "../audio/recorder";
+import type { PerformanceState } from "../audio/engine";
 import {
   encodeShareFragment,
   fileSlug,
@@ -116,6 +118,10 @@ const SHORTCUTS: readonly [string, string][] = [
   ["R", "Neu würfeln"],
   ["Umschalt + Entf", "Spur in dieser Szene leeren"],
   ["Pfeiltasten, Pos1, Ende", "Im Raster von Step zu Step"],
+  ["A", "Aufnahme starten und beenden"],
+  ["P", "Live-Tasten: 1 – 5 schalten Spuren am nächsten Takt stumm"],
+  ["F halten, Umschalt + F halten", "Filter zu (Tiefpass) oder auf (Hochpass)"],
+  ["B halten", "Break: Kick und Bass raus; loslassen: Drop am nächsten Takt"],
   ["Strg + Z", "Rückgängig"],
   ["Strg + Umschalt + Z", "Wiederholen"],
   ["?", "Diese Hilfe"],
@@ -158,6 +164,13 @@ export class GrooveboxApp {
     control: (index, value) => this.queueMacro(index, value),
   });
   private readonly pendingMacros = new Map<number, number>();
+  private performance: PerformanceState = { muted: [], pending: [], breakActive: false, dropPending: false };
+  private liveKeys = false;
+  private recording = false;
+  private recordingTimer: number | null = null;
+  private filterValue = 0;
+  private filterTarget = 0;
+  private filterFrame: number | null = null;
   private macroFrame: number | null = null;
 
   constructor(
@@ -195,6 +208,31 @@ export class GrooveboxApp {
     });
     document.body.append(this.overlays);
     this.brams.init(this.overlays);
+    this.audio.onPerformance((state) => {
+      this.performance = state;
+      this.updateLiveDom();
+    });
+    this.root.addEventListener("input", (event) => {
+      const input = event.target as HTMLInputElement;
+      if (!input.matches("[data-perf-filter]")) return;
+      this.cancelFilterGlide();
+      this.filterValue = Number(input.value) / 100;
+      this.audio.setPerformanceFilter(this.filterValue);
+    });
+    this.root.addEventListener("pointerdown", (event) => {
+      if ((event.target as Element).closest("[data-perf-break]")) this.audio.setBreak(true);
+    });
+    const releasePointer = (event: Event) => {
+      if (this.performance.breakActive && !this.performance.dropPending && (event.type !== "pointerleave" || (event.target as Element).closest?.("[data-perf-break]"))) this.audio.setBreak(false);
+      if ((event.target as Element).closest?.("[data-perf-filter]")) this.glideFilter(0, 0.18);
+    };
+    window.addEventListener("pointerup", releasePointer);
+    window.addEventListener("pointercancel", releasePointer);
+    window.addEventListener("keyup", (event) => this.handleLiveKeyUp(event));
+    window.addEventListener("blur", () => {
+      if (this.performance.breakActive) this.audio.setBreak(false);
+      if (this.filterTarget !== 0 || this.filterValue !== 0) this.glideFilter(0, 0.18);
+    });
     this.audio.onStatus(({ status, message }) => {
       this.wakeLock.playing = status === "playing";
       this.store.dispatch({
@@ -249,6 +287,7 @@ export class GrooveboxApp {
         <main class="gb-main">
           ${this.controlStrip(state)}
           ${this.arrangementBar(state)}
+          ${this.liveBar()}
           ${this.scenes(state)}
           <div class="gb-workspace">
             ${this.mixer(state)}
@@ -370,6 +409,110 @@ export class GrooveboxApp {
         <button class="bu-button bu-button--sm" type="button" data-action="share-link">Link teilen</button>
       </div>
     </section>`;
+  }
+
+  private liveBar(): string {
+    return `<section class="gb-live" aria-label="Live spielen und aufnehmen">
+      <button class="bu-button bu-button--sm gb-record" type="button" data-action="toggle-record" data-focus-key="record" aria-pressed="${this.recording}" title="Nimmt auf, was du hörst, und speichert es als WAV (A)"><span class="gb-record__dot" aria-hidden="true"></span>${this.recording ? "Aufnahme stoppen" : "Aufnahme"} <output data-record-time>${formatClock(this.audio.recordingSeconds)}</output></button>
+      <button class="bu-button bu-button--sm gb-live-keys" type="button" data-action="toggle-live-keys" data-focus-key="live-keys" aria-pressed="${this.liveKeys}" title="Mit Live-Tasten schalten 1–5 die Spuren am nächsten Takt stumm (P)">Live-Tasten <kbd>P</kbd></button>
+      <div class="gb-live-mutes" role="group" aria-label="Spuren am nächsten Takt stumm schalten">
+        ${TRACK_KINDS.map((track, index) => `<button type="button" class="gb-live-mute" data-action="perf-mute" data-track="${track}" data-focus-key="perf-${track}" aria-pressed="false" aria-label="${TRACK_LABELS[track].name} am nächsten Takt stumm schalten">${TRACK_LABELS[track].short}${this.liveKeys ? `<kbd>${index + 1}</kbd>` : ""}</button>`).join("")}
+      </div>
+      <label class="gb-live-filter" title="F halten: Tiefpass · Umschalt+F halten: Hochpass · federt beim Loslassen zurück"><span>Filter</span><input class="bu-range__input" type="range" min="-100" max="100" step="1" value="${Math.round(this.filterValue * 100)}" data-perf-filter aria-label="Filter, links Tiefpass, rechts Hochpass"></label>
+      <button type="button" class="bu-button bu-button--sm gb-break" data-perf-break title="Halten: Kick und Bass raus, der Hochpass steigt. Loslassen: Drop am nächsten Takt (B)">Break → Drop <kbd>B</kbd></button>
+    </section>`;
+  }
+
+  private updateLiveDom(): void {
+    const { muted, pending, breakActive, dropPending } = this.performance;
+    this.root.querySelectorAll<HTMLElement>(".gb-live-mute").forEach((button) => {
+      const track = button.dataset.track as TrackKind;
+      button.setAttribute("aria-pressed", String(muted.includes(track)));
+      button.toggleAttribute("data-pending", pending.includes(track));
+    });
+    const breakButton = this.root.querySelector<HTMLElement>("[data-perf-break]");
+    if (breakButton) {
+      breakButton.dataset.state = dropPending ? "drop" : breakActive ? "break" : "idle";
+      breakButton.setAttribute("aria-pressed", String(breakActive));
+    }
+  }
+
+  private togglePerformanceMute(track: TrackKind): void {
+    const muted = this.performance.muted.includes(track);
+    const pending = this.performance.pending.includes(track);
+    // A second press before the bar line takes the change back.
+    this.audio.setPerformanceMute(track, pending ? muted : !muted);
+  }
+
+  private async toggleRecording(): Promise<void> {
+    if (this.recording) {
+      await this.finishRecording();
+      return;
+    }
+    try {
+      if (this.store.getState().transport.status !== "playing") await this.audio.start(this.store.getState().ui.selectedScene);
+      await this.audio.startRecording();
+    } catch (error) {
+      this.brams.toast("Aufnahme nicht gestartet", error instanceof Error ? error.message : "Unbekannter Fehler", "danger");
+      return;
+    }
+    this.recording = true;
+    this.recordingTimer = window.setInterval(() => {
+      const seconds = this.audio.recordingSeconds;
+      const output = this.root.querySelector<HTMLOutputElement>("[data-record-time]");
+      if (output) output.value = formatClock(seconds);
+      if (seconds >= MAX_RECORDING_SECONDS) void this.finishRecording("Nach 15 Minuten automatisch beendet.");
+    }, 250);
+    this.render();
+  }
+
+  private async finishRecording(note?: string): Promise<void> {
+    if (!this.recording) return;
+    this.recording = false;
+    if (this.recordingTimer !== null) window.clearInterval(this.recordingTimer);
+    this.recordingTimer = null;
+    const pcm = await this.audio.stopRecording();
+    this.render();
+    const range = audibleRange(pcm);
+    if (!range) {
+      this.brams.toast("Aufnahme war still", "Es wurde nichts Hörbares aufgenommen.", "warning");
+      return;
+    }
+    const now = new Date();
+    const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+    const fileName = `${fileSlug(this.catalog.active.name)}-live-${stamp}.wav`;
+    downloadBlob(new Blob([encodePcm16Wav(pcm, range.start, range.end)], { type: "audio/wav" }), fileName);
+    const length = formatClock((range.end - range.start) / pcm.sampleRate);
+    this.brams.toast("Aufnahme gespeichert", `${fileName} (${length} min) liegt in deinen Downloads.${note ? ` ${note}` : ""}`, "success");
+  }
+
+  /** Moves the filter to `target` over `seconds`, as holding F or releasing the fader does. */
+  private glideFilter(target: number, seconds: number): void {
+    this.cancelFilterGlide();
+    this.filterTarget = target;
+    const from = this.filterValue;
+    const started = performance.now();
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - started) / (seconds * 1000));
+      this.filterValue = from + (target - from) * progress;
+      this.audio.setPerformanceFilter(this.filterValue);
+      const input = this.root.querySelector<HTMLInputElement>("[data-perf-filter]");
+      if (input) input.value = String(Math.round(this.filterValue * 100));
+      this.filterFrame = progress < 1 ? requestAnimationFrame(step) : null;
+    };
+    this.filterFrame = requestAnimationFrame(step);
+  }
+
+  private cancelFilterGlide(): void {
+    if (this.filterFrame !== null) cancelAnimationFrame(this.filterFrame);
+    this.filterFrame = null;
+  }
+
+  /** B and F are held; their release belongs to the key-up. */
+  private handleLiveKeyUp(event: KeyboardEvent): void {
+    const key = event.key.toLowerCase();
+    if (key === "b" && this.performance.breakActive) this.audio.setBreak(false);
+    if (key === "f" && this.filterTarget !== 0) this.glideFilter(0, 0.2);
   }
 
   private chainMessage(scene: number, pass: number, next: number | null): string {
@@ -666,6 +809,9 @@ export class GrooveboxApp {
     else if (action === "vary") this.store.dispatch({ type: "track/vary" });
     else if (action === "randomize") this.store.dispatch({ type: "track/randomize" });
     else if (action === "open-projects") this.openProjects();
+    else if (action === "toggle-record") void this.toggleRecording();
+    else if (action === "toggle-live-keys") { this.liveKeys = !this.liveKeys; this.render(); }
+    else if (action === "perf-mute") this.togglePerformanceMute(button.dataset.track as TrackKind);
     else if (action === "open-help") this.brams.open("#help-dialog");
     else if (action === "open-midi") this.openMidi();
     else if (action === "toggle-chain") this.toggleChain();
@@ -1043,9 +1189,21 @@ export class GrooveboxApp {
       this.brams.open("#help-dialog");
       return;
     }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        this.store.dispatch({ type: event.shiftKey ? "history/redo" : "history/undo" });
+      }
+      return;
+    }
+    const key = event.key.toLowerCase();
+    if (key === "a" && !event.repeat) { event.preventDefault(); void this.toggleRecording(); return; }
+    if (key === "p" && !event.repeat) { event.preventDefault(); this.liveKeys = !this.liveKeys; this.render(); return; }
+    if (key === "b") { event.preventDefault(); if (!event.repeat) this.audio.setBreak(true); return; }
+    if (key === "f") { event.preventDefault(); if (!event.repeat) this.glideFilter(event.shiftKey ? 0.85 : -0.85, 1.4); return; }
+    if (this.liveKeys && !event.shiftKey && /^[1-5]$/.test(event.key)) {
       event.preventDefault();
-      this.store.dispatch({ type: event.shiftKey ? "history/redo" : "history/undo" });
+      this.togglePerformanceMute(TRACK_KINDS[Number(event.key) - 1]!);
       return;
     }
     if (event.code === "Space") {
@@ -1114,4 +1272,9 @@ function formatDuration(seconds: number): string {
 
 function clearShareFragment(): void {
   if (window.location.hash) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+}
+
+function formatClock(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }

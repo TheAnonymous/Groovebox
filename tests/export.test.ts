@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { planSeconds, renderPlan } from "../src/audio/render";
-import { encodeWav, trimmedLength, type PcmSource } from "../src/audio/wav";
+import { audibleRange, encodePcm16Wav, encodeWav, trimmedLength, type PcmSource } from "../src/audio/wav";
 import { createFactoryProject } from "../src/domain/defaults";
 import { sanitizeProject } from "../src/domain/sanitize";
 import { decodeShareFragment, encodeShareFragment } from "../src/transfer";
@@ -77,5 +77,22 @@ describe("Teilen-Link", () => {
     await expect(decodeShareFragment("#p=1.abc")).rejects.toThrow("beschädigt");
     await expect(decodeShareFragment("#p=2.abc")).rejects.toThrow("neueren");
     await expect(decodeShareFragment("#p=1.$$$")).rejects.toThrow("unvollständig");
+  });
+});
+
+describe("Live-Aufnahme", () => {
+  it("schneidet Stille vorn und hinten ab und schreibt 16-Bit-Stereo", () => {
+    const left = new Int16Array(10_000);
+    const right = new Int16Array(10_000);
+    left[3_000] = 8_000;
+    right[6_000] = -8_000;
+    const pcm = { sampleRate: 1_000, left, right };
+    expect(audibleRange(pcm)).toEqual({ start: 2_950, end: 6_501 });
+    expect(audibleRange({ sampleRate: 1_000, left: new Int16Array(10), right: new Int16Array(10) })).toBeNull();
+    const wav = new DataView(encodePcm16Wav(pcm, 2_950, 6_501));
+    expect(wav.getUint16(22, true)).toBe(2);
+    expect(wav.getUint32(40, true)).toBe((6_501 - 2_950) * 4);
+    expect(wav.getInt16(44 + 50 * 4, true)).toBe(8_000);
+    expect(wav.getInt16(44 + 3_050 * 4 + 2, true)).toBe(-8_000);
   });
 });

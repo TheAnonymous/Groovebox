@@ -1,5 +1,6 @@
 import * as Tone from "tone";
 import { LeanChorus, LeanEq3, LeanFeedbackDelay, LeanFilter, LeanMeter, LeanReverb } from "./lean";
+import { PerformanceFilter } from "./performance";
 import { safeEffectParameters } from "../domain/sound-presets";
 import type { SoundPresetId, TrackKind, TrackMacros } from "../domain/types";
 
@@ -55,6 +56,7 @@ export interface TrackGraph {
 
 export interface MasterGraph {
   input: Tone.Gain;
+  performance: PerformanceFilter;
   highpass: LeanFilter;
   eq: LeanEq3;
   compressor: Tone.Compressor;
@@ -167,6 +169,7 @@ export function applyTrackMacros(
 
 export function createMasterGraph(destination: Tone.ToneAudioNode = Tone.getDestination()): MasterGraph {
   const input = new Tone.Gain(1);
+  const performance = new PerformanceFilter();
   const highpass = new LeanFilter({ type: "highpass", frequency: 25, rolloff: -24 });
   const eq = new LeanEq3({ low: -0.25, mid: 0.35, high: -0.2, lowFrequency: 180, highFrequency: 4_800 });
   const compressor = new Tone.Compressor({ threshold: -14, ratio: 1.6, attack: 0.03, release: 0.28, knee: 10 });
@@ -175,11 +178,12 @@ export function createMasterGraph(destination: Tone.ToneAudioNode = Tone.getDest
   const ceiling = new Tone.WaveShaper((sample) => Math.max(-ceilingLevel, Math.min(ceilingLevel, sample)), 4096);
   const fader = new Tone.Gain(0.78);
   const meter = new LeanMeter({ normalRange: false, smoothing: 0.82 });
-  input.chain(highpass, eq, compressor, limiter, ceiling, fader, destination);
+  input.chain(performance, highpass, eq, compressor, limiter, ceiling, fader, destination);
   fader.connect(meter);
-  const nodes: Tone.ToneAudioNode[] = [input, highpass, eq, compressor, limiter, ceiling, fader, meter];
+  const nodes: Tone.ToneAudioNode[] = [input, performance, highpass, eq, compressor, limiter, ceiling, fader, meter];
   return {
     input,
+    performance,
     highpass,
     eq,
     compressor,
