@@ -8,6 +8,7 @@ import { applyTrackMacros, createMasterGraph, createTrackGraph, type MasterGraph
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
 import { createVoiceBank, MAX_VOICE_BANKS, type VoiceBank } from "./voices";
 import { MasterRecorder, type Recording } from "./recorder";
+import { playThroughSilentSwitch } from "./ios-audio";
 
 export { drumLayerGain, MAX_VOICE_BANKS, VOICE_LIMITS } from "./voices";
 
@@ -101,6 +102,8 @@ export class ToneAudioEngine implements AudioEngine {
     // Already prepared (e.g. recording or MIDI while music plays): report nothing new.
     if (this.initialized && Tone.getContext().state === "running") return;
     this.emitStatus("starting", "Audio wird vorbereitet …");
+    // iPhones and iPads: play even with the ring/silent switch on silent (live sound only).
+    if (!this.options.offline) playThroughSilentSwitch();
     await Tone.start();
     if (!this.initialized) {
       this.graphReady ??= this.createGraph().finally(() => { this.graphReady = null; });

@@ -651,3 +651,15 @@ test("zeigt Meldungen mit Symbolen aus dem mitgelieferten Sprite", async ({ page
   expect(sprite.headers()["content-type"]).toContain("image/svg+xml");
   expect(await sprite.text()).toContain('id="check"');
 });
+
+test("declares its sound as playback on Apple devices, so the ring/silent switch does not mute it", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "Audio-Start wird einmal in Chromium geprüft");
+  // Safari's audio session (iOS 17+); Chromium has none, so the test gives the page one.
+  await page.addInitScript(() => { Object.defineProperty(navigator, "audioSession", { value: { type: "auto" }, configurable: true }); });
+  await page.reload();
+  const sessionType = () => page.evaluate(() => (navigator as Navigator & { audioSession: { type: string } }).audioSession.type);
+  expect(await sessionType()).toBe("auto");
+  await page.getByRole("button", { name: "Wiedergabe starten" }).click();
+  await expect(page.locator("[data-audio-status]")).toContainText("Wiedergabe läuft", { timeout: 10_000 });
+  expect(await sessionType()).toBe("playback");
+});
