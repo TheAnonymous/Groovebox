@@ -17,7 +17,7 @@
     "verify": "npm test && npm run build && npm run test:e2e -- --project=chromium --project=firefox && npm run test:audio"
   },
   "dependencies": {
-    "tone": "15.5.27"
+    "klangwerk": "github:TheAnonymous/Klangwerk#90de546e8abb83c7fcd7a96cb371c24581a9302f"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",

@@ -1,4 +1,4 @@
-import * as Tone from "tone";
+import { atStep, swapSound, useContext } from "klangwerk/tone";
 import { createFactoryProject } from "../domain/defaults";
 import { chordNotes, scaleDegreeMidi } from "../domain/music";
 import type { DrumVoice, SoundPresetId, Step, TrackKind, TrackMacros } from "../domain/types";
@@ -38,6 +38,28 @@ export const LAB_MACROS = {
 const SAMPLE_RATE = 44_100;
 const PRESET_DURATION = 10;
 
+type Schedule = (time: number, trigger: (renderTime: number) => void) => void;
+
+/**
+ * Builds in a fresh stereo offline context and renders it, as Tone.Offline
+ * did: the scheduled triggers run after the build, in time order (equal times
+ * in the order they were scheduled), as Tone's transport fired them.
+ */
+async function renderOffline(seconds: number, build: (schedule: Schedule) => Promise<void>): Promise<AudioBuffer> {
+  // Tone.OfflineContext asks for seconds · rate frames, which the context truncates.
+  const context = new OfflineAudioContext(2, seconds * SAMPLE_RATE, SAMPLE_RATE);
+  const events: { time: number; trigger: (renderTime: number) => void }[] = [];
+  const previous = useContext(context);
+  try {
+    await build((time, trigger) => events.push({ time, trigger }));
+    events.sort((a, b) => a.time - b.time);
+    for (const { time, trigger } of events) atStep(time, () => trigger(time));
+  } finally {
+    swapSound(previous);
+  }
+  return context.startRendering();
+}
+
 export async function renderPresetPhrase(
   track: TrackKind,
   preset: SoundPresetId,
@@ -45,7 +67,7 @@ export async function renderPresetPhrase(
   drumAudition: DrumAudition = "full",
 ): Promise<OfflineRender> {
   let lastEventTime = 0;
-  const rendered = await Tone.Offline(async ({ transport }) => {
+  const buffer = await renderOffline(PRESET_DURATION, async (schedule) => {
     const master = createMasterGraph();
     master.fader.gain.value = 0.82;
     const graph = createTrackGraph(track, master.input);
@@ -53,13 +75,8 @@ export async function renderPresetPhrase(
     applyTrackMacros(graph, track, preset, macros, 0);
     const bank = createVoiceBank(track, preset, graph.input, { alwaysAwake: true });
     await graph.ready;
-    lastEventTime = schedulePresetPhrase(bank, track, drumAudition, (time, trigger) => {
-      transport.schedule((renderTime) => trigger(renderTime), time);
-    });
-    transport.start(0);
-  }, PRESET_DURATION, 2, SAMPLE_RATE);
-  const buffer = rendered.get();
-  if (!buffer) throw new Error("Offline-Rendering lieferte keinen Audiopuffer");
+    lastEventTime = schedulePresetPhrase(bank, track, drumAudition, schedule);
+  });
   return { buffer, metrics: analyzeAudioBuffer(buffer, lastEventTime) };
 }
 
@@ -69,7 +86,7 @@ export async function renderFactoryMix(): Promise<OfflineRender> {
   const sceneSeconds = stepSeconds * 16;
   const duration = sceneSeconds * project.scenes.length + 5.5;
   const lastEventTime = sceneSeconds * project.scenes.length;
-  const rendered = await Tone.Offline(async ({ transport }) => {
+  const buffer = await renderOffline(duration, async (schedule) => {
     const master = createMasterGraph();
     master.fader.gain.value = 1;
     const gains = effectiveTrackGains(project);
@@ -92,25 +109,17 @@ export async function renderFactoryMix(): Promise<OfflineRender> {
           if (!step.enabled) return;
           const time = sceneIndex * sceneSeconds + stepIndex * stepSeconds + 0.05;
           const velocity = step.dynamics === "accent" ? 0.92 : step.dynamics === "ghost" ? 0.38 : 0.66;
-          transport.schedule((renderTime) => {
+          schedule(time, (renderTime) => {
             triggerMusicalStep(banks[track], track, step, chord.degree, chordNotes(project.key, project.scale, chord, 3), renderTime, velocity);
-          }, time);
+          });
         });
       }
     });
-    transport.start(0);
-  }, duration, 2, SAMPLE_RATE);
-  const buffer = rendered.get();
-  if (!buffer) throw new Error("Offline-Rendering lieferte keinen Audiopuffer");
+  });
   return { buffer, metrics: analyzeAudioBuffer(buffer, lastEventTime) };
 }
 
-function schedulePresetPhrase(
-  bank: VoiceBank,
-  track: TrackKind,
-  drumAudition: DrumAudition,
-  schedule: (time: number, trigger: (renderTime: number) => void) => void,
-): number {
+function schedulePresetPhrase(bank: VoiceBank, track: TrackKind, drumAudition: DrumAudition, schedule: Schedule): number {
   const normal = auditionStep("normal", 0.35);
   const accent = auditionStep("normal", 0.72, "accent");
   const ghost = auditionStep("short", 0.9, "ghost");

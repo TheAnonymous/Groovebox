@@ -1,4 +1,4 @@
-import * as Tone from "tone";
+import { swapSound, useContext } from "klangwerk/tone";
 import { LAB_MACROS, renderFactoryMix, renderPresetPhrase, type DrumAudition, type OfflineRender } from "../src/audio/offline";
 import { ToneAudioEngine } from "../src/audio/engine";
 import { createFactoryProject } from "../src/domain/defaults";
@@ -106,7 +106,6 @@ async function runWithStatus(message: string, action: () => Promise<void>): Prom
   status.textContent = message;
   document.body.setAttribute("aria-busy", "true");
   try {
-    await Tone.start();
     await action();
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : "Rendering fehlgeschlagen";
@@ -152,12 +151,11 @@ Object.assign(window, {
           return create(...args);
         };
       }
-      const original = Tone.getContext();
-      Tone.setContext(new Tone.OfflineContext(native as never));
+      const previous = useContext(native);
       try {
         await new ToneAudioEngine(createFactoryProject(), { offline: true }).scheduleOffline({ startScene: 0, chainRepeats: null, steps: 0 });
       } finally {
-        Tone.setContext(original);
+        swapSound(previous);
       }
       return { total: Object.values(counts).reduce((sum, count) => sum + count, 0), constantSources: counts.createConstantSource ?? 0 };
     },

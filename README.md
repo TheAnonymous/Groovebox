@@ -3,7 +3,8 @@
 Eine vollständig clientseitige Synthwave-Groovebox für musikalische
 Einsteiger. Vier Szenen, fünf Instrumente und ein 4×16-Step-Sequencer laufen
 direkt im Browser. Drei kuratierte Klangfarben je Instrument sowie Kick,
-Snare, Clap, Closed/Open Hat und Tom werden lokal mit Tone.js synthetisiert.
+Snare, Clap, Closed/Open Hat und Tom werden lokal mit der Musik-Engine
+[Klangwerk](https://github.com/TheAnonymous/Klangwerk) synthetisiert.
 
 **Live:** https://musik.jodie-oesterling.de/Groovebox/ (Teil der
 [Musik-Werkstatt](https://musik.jodie-oesterling.de/))
@@ -36,8 +37,9 @@ Bandenergie, Stereokorrelation und Ausklingzeit an; das Lab selbst exportiert
 nichts. `npm run render:demo` rendert die Hörprobe der Handy-Seite und der
 Musik-Werkstatt über den WAV-Export der App neu (braucht ffmpeg).
 
-Die Audio-Engine baut Filter, EQ, Chorus, Hall und die Stimmen der Tone.js-
-Instrumente exakt aus nativen Web-Audio-Knoten nach (rund 300 statt 1.650
+Die Audio-Engine baut Filter, EQ, Chorus, Hall und die Stimmen der früheren
+Tone.js-Instrumente exakt aus nativen Web-Audio-Knoten nach (auf Klangwerk und
+`klangwerk/tone`; rund 300 statt 1.650
 Knoten), damit Chromium ohne Aussetzer spielt; ein Audiovertrag hält dieses
 Budget. Eine Hörentscheidung ist dabei offen: Die alte Engine legte unter die
 Hi-Hats eine FM-Schicht, die mit vertauschten Argumenten ausgelöst wurde

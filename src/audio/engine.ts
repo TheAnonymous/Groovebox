@@ -1,4 +1,5 @@
-import * as Tone from "tone";
+import { Cues, MasterRecorder, playThroughSilentSwitch, Transport, type Recording } from "klangwerk";
+import { atStep, connect, currentSound, Gain, now, setBpm, soundContext, SoundNode, swapSound, useContext, type Sound } from "klangwerk/tone";
 import { chordNotes, scaleDegreeMidi } from "../domain/music";
 import { allowsRatchet, loopPosition, sceneSteps, stepChance, stepRatchet } from "../domain/patterns";
 import type { ProjectV2, Step, TrackKind } from "../domain/types";
@@ -7,8 +8,6 @@ import { effectiveTrackGains } from "../store/store";
 import { applyTrackMacros, createMasterGraph, createTrackGraph, type MasterGraph, type TrackGraph } from "./graph";
 import { BarQueuedTransport, type SequencerPosition } from "./transport";
 import { createVoiceBank, MAX_VOICE_BANKS, type VoiceBank } from "./voices";
-import { MasterRecorder, type Recording } from "./recorder";
-import { playThroughSilentSwitch } from "./ios-audio";
 
 export { drumLayerGain, MAX_VOICE_BANKS, VOICE_LIMITS } from "./voices";
 
@@ -59,7 +58,7 @@ export interface PerformanceState {
 }
 
 export interface EngineOptions {
-  /** Renders inside Tone.Offline: no context-state checks, meters or draw callbacks. */
+  /** Renders in the current offline context: no context-state checks, meters or draw callbacks. */
   offline?: boolean;
   /** Offline only: each track's stereo output on its own channel pair instead of the master mix. */
   stems?: boolean;
@@ -79,7 +78,19 @@ export class ToneAudioEngine implements AudioEngine {
   private strips: Record<TrackKind, TrackGraph> | null = null;
   private readonly voiceBanks = new Map<string, VoiceBank>();
   private master: MasterGraph | null = null;
-  private scheduleId: number | null = null;
+  /** Steps an offline render still plays (`null` live). */
+  private offlineSteps: number | null = null;
+  /** The context this engine plays in (made current while it builds or schedules, as Tone's global one was). */
+  private sound: Sound | null = null;
+  private ownContext: AudioContext | null = null;
+  private cues: Cues | null = null;
+  private readonly transport = new Transport({
+    step: (_step, time) => this.withSound(() => atStep(this.transport.nextTime, () => this.tick(time))),
+    stepDuration: () => 60 / (this.tempoOverride ?? this.project.tempo) / 4,
+    // Tone's swing on sixteenths: the odd ones lean back by swing · 2/3 of a sixteenth.
+    swing: () => (this.project.swing * 2) / 3,
+    lookahead: 0.1,
+  });
   private meterFrame: number | null = null;
   private measuredPeak = 0;
   private measuredTrackPeaks = zeroTrackPeaks();
@@ -100,16 +111,17 @@ export class ToneAudioEngine implements AudioEngine {
 
   async initialize(): Promise<void> {
     // Already prepared (e.g. recording or MIDI while music plays): report nothing new.
-    if (this.initialized && Tone.getContext().state === "running") return;
+    if (this.initialized && this.sound?.context.state === "running") return;
     this.emitStatus("starting", "Audio wird vorbereitet …");
     // iPhones and iPads: play even with the ring/silent switch on silent (live sound only).
     if (!this.options.offline) playThroughSilentSwitch();
-    await Tone.start();
+    this.attachContext();
+    if (this.ownContext && this.ownContext.state !== "running") await this.ownContext.resume().catch(() => undefined);
     if (!this.initialized) {
-      this.graphReady ??= this.createGraph().finally(() => { this.graphReady = null; });
+      this.graphReady ??= this.withSound(() => this.createGraph()).finally(() => { this.graphReady = null; });
       await this.graphReady;
     }
-    if (Tone.getContext().state !== "running") {
+    if (this.context.state !== "running" && !(this.context instanceof OfflineAudioContext)) {
       this.emitStatus("suspended", "Audio ist pausiert – Start erneut anklicken");
       return;
     }
@@ -119,15 +131,14 @@ export class ToneAudioEngine implements AudioEngine {
   async start(scene: number, at?: number): Promise<void> {
     try {
       await this.initialize();
-      if (Tone.getContext().state !== "running") return;
-      const transport = Tone.getTransport();
-      transport.stop();
-      transport.cancel();
-      transport.position = 0;
+      if (this.context.state !== "running") return;
+      this.transport.halt();
       this.clock.start(scene);
-      this.applyProject();
-      this.scheduleId = transport.scheduleRepeat((time) => this.tick(time), "16n");
-      transport.start(at === undefined ? "+0.05" : contextTimeAt(at));
+      this.withSound(() => {
+        this.applyProject();
+        // The first steps come with the clock's next beat, as with Tone's transport.
+        this.transport.begin(this.context, at === undefined ? now() + 0.05 : contextTimeAt(at));
+      });
       this.emitStatus("playing", "Wiedergabe läuft");
     } catch (error) {
       this.emitStatus("error", error instanceof Error ? error.message : "Audio konnte nicht gestartet werden");
@@ -136,22 +147,19 @@ export class ToneAudioEngine implements AudioEngine {
 
   stop(): void {
     this.resetPerformance();
-    const transport = Tone.getTransport();
-    transport.stop();
-    if (this.scheduleId !== null) transport.clear(this.scheduleId);
-    this.scheduleId = null;
+    this.transport.halt();
+    this.cues?.cancel();
     this.clock.reset();
-    this.releaseAll();
+    if (this.sound) this.withSound(() => this.releaseAll());
     this.resetMeters();
     this.emitStatus("idle", "Gestoppt");
   }
 
   panic(): void {
-    Tone.getTransport().stop();
-    Tone.getTransport().cancel();
-    this.scheduleId = null;
+    this.transport.halt();
+    this.cues?.cancel();
     this.clock.reset();
-    this.destroyGraph();
+    if (this.sound) this.withSound(() => this.destroyGraph());
     this.resetMeters();
     this.emitStatus("idle", "Panik – alle Stimmen und Effekte gestoppt");
   }
@@ -167,31 +175,37 @@ export class ToneAudioEngine implements AudioEngine {
   /** An external MIDI clock's tempo replaces the project tempo until `null`; the project keeps its own. */
   setTempoOverride(bpm: number | null): void {
     this.tempoOverride = bpm === null ? null : Math.max(40, Math.min(240, bpm));
-    if (this.initialized) Tone.getTransport().bpm.rampTo(this.tempoOverride ?? this.project.tempo, 0.08);
+    if (this.initialized) this.withSound(() => setBpm(this.tempoOverride ?? this.project.tempo));
   }
 
   /** Builds the full signal path in the current (offline) context and schedules `plan` on its transport. */
   async scheduleOffline(plan: RenderPlan): Promise<void> {
     if (!this.options.offline) throw new Error("scheduleOffline braucht eine Offline-Engine");
-    await this.createGraph();
-    const transport = Tone.getTransport();
-    transport.bpm.value = this.project.tempo;
-    this.clock.setChain(plan.chainRepeats);
-    this.clock.start(plan.startScene);
-    this.applyProject();
-    let remaining = plan.steps;
-    transport.scheduleRepeat((time) => {
-      if (remaining <= 0) return;
-      remaining -= 1;
-      this.tick(time);
-    }, "16n", 0);
+    this.attachContext();
+    // The graph is built at the context's starting tempo (120 BPM), as before with Tone's transport.
+    await this.withSound(() => this.createGraph());
+    this.withSound(() => {
+      setBpm(this.project.tempo);
+      this.clock.setChain(plan.chainRepeats);
+      this.clock.start(plan.startScene);
+      this.applyProject();
+    });
+    this.offlineSteps = plan.steps;
+    this.transport.begin(this.context, 0);
+  }
+
+  /** Schedules an offline render up to `seconds` (see `scheduleOffline`). */
+  renderUntil(seconds: number): void {
+    this.transport.renderUntil(seconds);
   }
 
   syncProject(project: ProjectV2): void {
     this.project = structuredClone(project);
     if (this.initialized) {
-      this.prepareSelectedVoiceBanks();
-      this.applyProject();
+      this.withSound(() => {
+        this.prepareSelectedVoiceBanks();
+        this.applyProject();
+      });
     }
   }
 
@@ -206,18 +220,18 @@ export class ToneAudioEngine implements AudioEngine {
   }
 
   dispose(): void {
-    Tone.getTransport().stop();
-    Tone.getTransport().cancel();
-    this.scheduleId = null;
+    this.transport.halt();
+    this.cues?.cancel();
     this.clock.reset();
-    this.destroyGraph();
+    if (this.sound) this.withSound(() => this.destroyGraph());
+    this.transport.dispose();
     this.playheadListeners.clear();
     this.statusListeners.clear();
   }
 
   private async createGraph(): Promise<void> {
     // Stems skip the master: its output goes nowhere and each strip feeds its own channel pair.
-    const master = createMasterGraph(this.options.stems ? new Tone.Gain(0) : undefined);
+    const master = createMasterGraph(this.options.stems ? new Gain(0) : undefined);
     const strips = {} as Record<TrackKind, TrackGraph>;
     this.master = master;
     for (const track of TRACK_KINDS) strips[track] = createTrackGraph(track, master.input);
@@ -244,10 +258,8 @@ export class ToneAudioEngine implements AudioEngine {
   }
 
   private applyProject(): void {
-    const transport = Tone.getTransport();
-    transport.bpm.rampTo(this.tempoOverride ?? this.project.tempo, 0.08);
-    transport.swing = this.project.swing;
-    transport.swingSubdivision = "16n";
+    // The transport reads tempo and swing for every step; note values follow the tempo from here.
+    setBpm(this.tempoOverride ?? this.project.tempo);
     this.master?.fader.gain.rampTo(this.project.masterVolume, 0.04);
     const gains = effectiveTrackGains(this.project);
     for (const track of TRACK_KINDS) {
@@ -263,25 +275,29 @@ export class ToneAudioEngine implements AudioEngine {
     if (this.performanceMuted.has(track) === muted) this.performancePending.delete(track);
     else this.performancePending.set(track, muted);
     // Without a running transport there is no bar line to wait for.
-    if (this.scheduleId === null) this.applyPendingMutes();
+    if (!this.transport.running) this.applyPendingMutes();
     this.emitPerformance();
   }
 
   setBreak(active: boolean): void {
-    const now = Tone.now();
+    if (!this.sound) return this.setBreakAt(active, 0);
+    this.withSound(() => this.setBreakAt(active, now()));
+  }
+
+  private setBreakAt(active: boolean, now: number): void {
     if (active) {
       this.breakActive = true;
       this.dropPending = false;
       this.master?.performance.startRise(now, (2 * 240) / (this.tempoOverride ?? this.project.tempo));
     } else if (this.breakActive) {
       this.dropPending = true;
-      if (this.scheduleId === null) this.drop(now);
+      if (!this.transport.running) this.drop(now);
     }
     this.emitPerformance();
   }
 
   setPerformanceFilter(value: number): void {
-    this.master?.performance.setFilter(value);
+    if (this.sound) this.withSound(() => this.master?.performance.setFilter(value));
   }
 
   onPerformance(listener: (state: PerformanceState) => void): () => void {
@@ -291,8 +307,9 @@ export class ToneAudioEngine implements AudioEngine {
 
   async startRecording(): Promise<void> {
     if (!this.initialized) await this.initialize();
-    if (Tone.getContext().state !== "running") throw new Error("Audio ist pausiert");
-    await this.recorder.start(Tone.getDestination());
+    const fader = this.master?.fader;
+    if (this.context.state !== "running" || !(this.context instanceof AudioContext) || !fader) throw new Error("Audio ist pausiert");
+    await this.recorder.start(this.context, fader.output);
   }
 
   stopRecording(): Promise<Recording> {
@@ -304,7 +321,11 @@ export class ToneAudioEngine implements AudioEngine {
   }
 
   private tick(time: number): void {
-    if (!this.options.offline && Tone.getContext().state !== "running") {
+    if (this.offlineSteps !== null) {
+      if (this.offlineSteps <= 0) return;
+      this.offlineSteps -= 1;
+    }
+    if (!this.options.offline && this.context.state !== "running") {
       this.emitStatus("suspended", "Audio wurde vom Browser pausiert – Start erneut anklicken");
       return;
     }
@@ -313,7 +334,7 @@ export class ToneAudioEngine implements AudioEngine {
     if (position.step === 0 && (this.performancePending.size > 0 || this.dropPending)) {
       this.applyPendingMutes();
       if (this.dropPending) this.drop(time);
-      Tone.getDraw().schedule(() => this.emitPerformance(), time);
+      this.cues?.at(time, () => this.emitPerformance());
     }
     for (const track of TRACK_KINDS) {
       try {
@@ -324,10 +345,10 @@ export class ToneAudioEngine implements AudioEngine {
       }
     }
     if (this.options.offline) return;
-    Tone.getDraw().schedule(() => {
+    this.cues?.at(time, () => {
       const event = { ...position, peak: this.measuredPeak, trackPeaks: { ...this.measuredTrackPeaks }, chainNext: this.clock.chainNext };
       for (const listener of this.playheadListeners) listener(event);
-    }, time);
+    });
   }
 
   private triggerTrack(track: TrackKind, position: SequencerPosition, time: number): void {
@@ -405,8 +426,12 @@ export class ToneAudioEngine implements AudioEngine {
   private resetPerformance(): void {
     this.performanceMuted.clear();
     this.performancePending.clear();
-    if (this.breakActive || this.dropPending) this.drop(Tone.now());
-    this.master?.performance.setFilter(0);
+    if (this.sound) {
+      this.withSound(() => {
+        if (this.breakActive || this.dropPending) this.drop(now());
+        this.master?.performance.setFilter(0);
+      });
+    }
     this.emitPerformance();
   }
 
@@ -446,6 +471,37 @@ export class ToneAudioEngine implements AudioEngine {
     this.measuredTrackPeaks = zeroTrackPeaks();
   }
 
+  /**
+   * The context this engine plays in: offline engines take the current one
+   * (made current by the render or lab); live ones make an AudioContext on the
+   * first tap and keep it current, as Tone's global context was.
+   */
+  private attachContext(): void {
+    if (this.sound) return;
+    if (!this.options.offline) {
+      const context = new AudioContext({ latencyHint: "interactive" });
+      this.ownContext = context;
+      useContext(context);
+      this.cues = new Cues(() => context.currentTime);
+    }
+    this.sound = currentSound();
+  }
+
+  private get context(): BaseAudioContext {
+    if (!this.sound) throw new Error("initialize() first");
+    return this.sound.context;
+  }
+
+  /** Runs `action` with this engine's context current. */
+  private withSound<T>(action: () => T): T {
+    const previous = swapSound(this.sound);
+    try {
+      return action();
+    } finally {
+      swapSound(previous);
+    }
+  }
+
   private emitStatus(status: AudioStatus, message: string): void {
     for (const listener of this.statusListeners) listener({ status, message });
   }
@@ -476,7 +532,7 @@ function clamp01(value: number): number {
  * at the same moment. Times already past start as soon as possible.
  */
 export function contextTimeAt(epochMs: number): number {
-  const raw = Tone.getContext().rawContext as unknown as AudioContext;
+  const raw = soundContext() as AudioContext;
   const stamp = typeof raw.getOutputTimestamp === "function" ? raw.getOutputTimestamp() : null;
   const target = stamp?.contextTime !== undefined && stamp.performanceTime
     ? stamp.contextTime + (epochMs - (performance.timeOrigin + stamp.performanceTime)) / 1000
@@ -485,12 +541,12 @@ export function contextTimeAt(epochMs: number): number {
 }
 
 /** Routes each stereo output to its own channel pair of the (offline) destination. */
-function connectStems(outputs: readonly Tone.ToneAudioNode[]): void {
-  const raw = Tone.getContext().rawContext;
+function connectStems(outputs: readonly SoundNode[]): void {
+  const raw = soundContext();
   const merger = raw.createChannelMerger(outputs.length * 2);
   outputs.forEach((output, index) => {
     const splitter = raw.createChannelSplitter(2);
-    Tone.connect(output, splitter as unknown as AudioNode);
+    connect(output, splitter);
     splitter.connect(merger, 0, index * 2);
     splitter.connect(merger, 1, index * 2 + 1);
   });

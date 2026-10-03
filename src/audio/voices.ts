@@ -1,6 +1,7 @@
-import * as Tone from "tone";
-import { LeanFilter, SleepyOutput } from "./lean";
-import { LeanEnvelope, LeanTone, NoiseVoice, OneShotTone, type BasicWave, type ToneSpec } from "./lean-voices";
+import {
+  currentTime, Gain, LeanEnvelope, LeanFilter, LeanTone, midiFrequency, NoiseVoice, OneShotTone, Panner, SleepyOutput, SoundNode, toFrequency,
+  type BasicWave, type ToneSpec,
+} from "klangwerk/tone";
 import { presetDefinition, type SoundPresetDefinition } from "../domain/sound-presets";
 import type { DrumVoice, SoundPresetId, Step, TrackKind } from "../domain/types";
 
@@ -40,7 +41,7 @@ const SLEEP_MARGIN_SECONDS = 0.15;
 export function createVoiceBank(
   track: TrackKind,
   preset: SoundPresetId,
-  destination: Tone.ToneAudioNode,
+  destination: SoundNode,
   options: VoiceBankOptions = {},
 ): VoiceBank {
   return track === "drums"
@@ -72,41 +73,44 @@ export function maximumDryTailSeconds(definition: SoundPresetDefinition): number
   return definition.articulation.gate.long * (1 + definition.articulation.variation.gate) + definition.release;
 }
 
-function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode, alwaysAwake: boolean): VoiceBank {
+function createDrumBank(preset: SoundPresetId, destination: SoundNode, alwaysAwake: boolean): VoiceBank {
   const definition = presetDefinition("drums", preset);
   const character = definition.drums;
   if (!character) throw new Error(`Drum-Preset ${preset} besitzt keinen Drum-Charakter`);
-  const output = new Tone.Gain(definition.level).connect(destination);
-  const kickBus = new Tone.Gain(1);
+  const output = new Gain(definition.level).connect(destination);
+  const kickBus = new Gain(1);
   // Tone.MembraneSynth: exponential attack, pitch falling from f·2^octaves to f.
   const kickPitch = new OneShotTone({ kind: "basic", type: definition.oscillator === "triangle" ? "triangle" : "sine" }, {
+    restart: true,
     pitch: { octaves: character.kickOctaves, pitchDecay: character.kickPitchDecay },
     envelope: { attack: definition.attack, decay: definition.decay, sustain: 0.01, release: definition.release, attackCurve: "exponential" },
   }).connect(kickBus);
   const kickSub = new OneShotTone({ kind: "basic", type: "sine" }, {
+    restart: true,
     pitch: { octaves: Math.max(2.4, character.kickOctaves * 0.48), pitchDecay: character.kickPitchDecay * 1.35 },
     envelope: { attack: 0.001, decay: definition.decay * 1.2, sustain: 0.015, release: definition.release, attackCurve: "exponential" },
   }).connect(kickBus);
   const kickClickFilter = new LeanFilter({ type: "highpass", frequency: 3_800, Q: 0.45, rolloff: -12 }).connect(kickBus);
   const kickClick = new NoiseVoice("white", { attack: 0.001, decay: 0.012, sustain: 0, release: 0.008 }).connect(kickClickFilter);
 
-  const snarePanner = new Tone.Panner(-0.04);
+  const snarePanner = new Panner(-0.04);
   const snareFilter = new LeanFilter({ type: "bandpass", frequency: character.snareBandFrequency, Q: 0.72, rolloff: -12 }).connect(snarePanner);
   const snareNoise = new NoiseVoice(character.snareNoise === "pink" ? "pink" : "white", {
     attack: 0.001, decay: 0.11 + definition.decay * 0.32, sustain: 0, release: definition.release * 0.55,
   }).connect(snareFilter);
   const snareBody = new OneShotTone({ kind: "basic", type: "triangle" }, {
+    restart: true,
     envelope: { attack: 0.001, decay: 0.09 + definition.decay * 0.18, sustain: 0, release: 0.05 },
   }).connect(snarePanner);
 
-  const clapPanner = new Tone.Panner(0.08);
+  const clapPanner = new Panner(0.08);
   const clapFilter = new LeanFilter({ type: "highpass", frequency: Math.max(1_100, character.snareBandFrequency * 0.72), Q: 0.5, rolloff: -12 }).connect(clapPanner);
   const clapParts = Array.from({ length: 3 }, () => new NoiseVoice("white", {
     attack: 0.001, decay: character.clapTail, sustain: 0, release: character.clapTail * 0.7,
   }).connect(clapFilter));
 
-  const closedHatPanner = new Tone.Panner(-0.14);
-  const openHatPanner = new Tone.Panner(0.16);
+  const closedHatPanner = new Panner(-0.14);
+  const openHatPanner = new Panner(0.16);
   const closedHatNoiseFilter = new LeanFilter({ type: "highpass", frequency: character.hatNoiseCutoff, Q: 0.45, rolloff: -12 }).connect(closedHatPanner);
   const openHatNoiseFilter = new LeanFilter({ type: "highpass", frequency: character.hatNoiseCutoff, Q: 0.45, rolloff: -12 }).connect(openHatPanner);
   const closedHatNoise = new NoiseVoice("white", { attack: 0.001, decay: 0.075, sustain: 0, release: 0.035 }).connect(closedHatNoiseFilter);
@@ -114,8 +118,9 @@ function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode, 
     attack: 0.001, decay: (0.32 + definition.decay * 0.3) * character.openHatScale, sustain: 0, release: 0.12 * character.openHatScale,
   }).connect(openHatNoiseFilter);
 
-  const tomPanner = new Tone.Panner(0);
+  const tomPanner = new Panner(0);
   const tom = new OneShotTone({ kind: "basic", type: "triangle" }, {
+    restart: true,
     pitch: { octaves: character.tomOctaves, pitchDecay: character.tomPitchDecay },
     envelope: { attack: 0.002, decay: 0.22 + definition.decay * 0.4, sustain: 0.02, release: 0.16, attackCurve: "exponential" },
   }).connect(tomPanner);
@@ -127,7 +132,7 @@ function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode, 
     openHat: new SleepyOutput(openHatPanner, output, alwaysAwake),
     tom: new SleepyOutput(tomPanner, output, alwaysAwake),
   } satisfies Record<DrumVoice, SleepyOutput>;
-  const nodes: Tone.ToneAudioNode[] = [
+  const nodes: SoundNode[] = [
     kickBus,
     kickPitch,
     kickSub,
@@ -165,13 +170,13 @@ function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode, 
     };
     groups[voice].wake(time, time + tails[voice] + SLEEP_MARGIN_SECONDS);
     if (voice === "kick") {
-      const tunedKick = Tone.Frequency(character.kickNote).toFrequency() * (1 + expression * 0.035);
+      const tunedKick = toFrequency(character.kickNote) * (1 + expression * 0.035);
       kickPitch.triggerAttackRelease(tunedKick, (0.12 + expression * 0.12) * length, time, velocity * 0.76);
       kickSub.triggerAttackRelease(character.kickSubFrequency, (0.18 + expression * 0.1) * length, time, velocity * definition.articulation.subLevel);
       kickClick.triggerAttackRelease(0.014, time, velocity * definition.articulation.transientLevel);
     } else if (voice === "snare") {
       snareNoise.triggerAttackRelease((0.08 + expression * 0.16) * length, time, velocity * 0.6);
-      const tunedBody = Tone.Frequency(character.snareBodyNote).toFrequency() * (1 + expression * 0.08);
+      const tunedBody = toFrequency(character.snareBodyNote) * (1 + expression * 0.08);
       snareBody.triggerAttackRelease(tunedBody, (0.06 + expression * 0.08) * length, time, velocity * 0.38);
     } else if (voice === "clap") {
       clapParts.forEach((part, index) => part.triggerAttackRelease(
@@ -187,7 +192,7 @@ function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode, 
     } else {
       const noteIndex = expression > 0.66 ? 2 : expression > 0.33 ? 1 : 0;
       tomPanner.pan.setValueAtTime([-0.18, 0, 0.18][noteIndex] ?? 0, time);
-      tom.triggerAttackRelease(Tone.Frequency(character.tomNotes[noteIndex] ?? "C2").toFrequency(), (0.16 + expression * 0.22) * length, time, velocity * 0.58);
+      tom.triggerAttackRelease(toFrequency(character.tomNotes[noteIndex] ?? "C2"), (0.16 + expression * 0.22) * length, time, velocity * 0.58);
     }
   };
 
@@ -219,14 +224,15 @@ function createDrumBank(preset: SoundPresetId, destination: Tone.ToneAudioNode, 
 function createMelodicBank(
   track: Exclude<TrackKind, "drums">,
   preset: SoundPresetId,
-  destination: Tone.ToneAudioNode,
+  destination: SoundNode,
   alwaysAwake: boolean,
 ): VoiceBank {
   const definition = presetDefinition(track, preset);
   const character = definition.voice;
   if (!character) throw new Error(`Melodisches Preset ${preset} besitzt keinen Voice-Charakter`);
-  const output = new Tone.Gain(definition.level).connect(destination);
-  const startAt = output.context.currentTime;
+  const output = new Gain(definition.level).connect(destination);
+  // Tone's context clock: in an offline render the step that builds the bank.
+  const startAt = currentTime();
   const voices = Array.from({ length: VOICE_LIMITS[track] }, () => {
     const oscillator = new LeanTone(output.context, melodicSpec(definition), 440, definition.detune).start(startAt);
     const filter = new LeanFilter({
@@ -267,7 +273,7 @@ function createMelodicBank(
   const transient = transientFilter
     ? new NoiseVoice("pink", { attack: 0.001, decay: 0.018, sustain: 0, release: 0.012 }).connect(transientFilter)
     : null;
-  const nodes: Tone.ToneAudioNode[] = [
+  const nodes: SoundNode[] = [
     ...voices.flatMap((voice) => [voice.filter, voice.envelope]),
     ...subVoices.flatMap((voice) => [voice.filter, voice.envelope]),
     ...(transientFilter ? [transientFilter] : []),
@@ -322,7 +328,7 @@ function createMelodicBank(
     dispose: () => {
       [...voices, ...subVoices].forEach((voice) => {
         voice.sleep.dispose();
-        voice.oscillator.stop(output.context.currentTime);
+        voice.oscillator.stop(currentTime());
         voice.oscillator.dispose();
       });
       transientSleep?.dispose();
@@ -343,7 +349,7 @@ function melodicSpec(definition: SoundPresetDefinition): ToneSpec {
 }
 
 function toHz(midi: number): number {
-  return Tone.Frequency(midi, "midi").toFrequency();
+  return midiFrequency(midi);
 }
 
 function clamp01(value: number): number {

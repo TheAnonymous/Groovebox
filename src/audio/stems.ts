@@ -1,4 +1,4 @@
-import { encodeWav, trimmedLength, type PcmSource } from "./wav";
+import { encodeWav, trimmedLength, type PcmSource } from "klangwerk";
 import { zipStored } from "../zip";
 
 /** The stereo stem of track `index` in a stems render (one channel pair per track). */

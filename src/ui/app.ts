@@ -41,8 +41,7 @@ import {
 } from "../domain/types";
 import { MAX_PROJECTS, type ProjectCatalog } from "../catalog";
 import { planSeconds, renderPlan, renderProject, type ExportMode } from "../audio/render";
-import { audibleRange, encodePcm16Wav, encodeWav, trimmedLength } from "../audio/wav";
-import { MAX_RECORDING_SECONDS } from "../audio/recorder";
+import { audibleRange, encodePcm16Wav, encodeWav, MAX_RECORDING_SECONDS, trimmedLength } from "klangwerk";
 import { stemsArchive } from "../audio/stems";
 import { AppLink, fitTempo, type LinkPeer } from "../link";
 import type { PerformanceState } from "../audio/engine";

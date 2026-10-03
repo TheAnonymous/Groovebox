@@ -1,5 +1,5 @@
-import * as Tone from "tone";
-import { LeanChorus, LeanEq3, LeanFeedbackDelay, LeanFilter, LeanMeter, LeanReverb } from "./lean";
+import { Compressor, Gain, LeanChorus, LeanEq3, LeanFilter, Limiter, Panner, soundContext, SoundNode, toSeconds, WaveShaper } from "klangwerk/tone";
+import { LeanFeedbackDelay, LeanMeter, LeanReverb } from "./lean";
 import { PerformanceFilter } from "./performance";
 import { safeEffectParameters } from "../domain/sound-presets";
 import type { SoundPresetId, TrackKind, TrackMacros } from "../domain/types";
@@ -33,57 +33,57 @@ export const PARALLEL_SEND_CONTRACT = {
 } as const;
 
 export interface TrackGraph {
-  input: Tone.Gain;
+  input: Gain;
   highpass: LeanFilter;
   filter: LeanFilter;
   eq: LeanEq3;
-  saturation: Tone.WaveShaper;
-  compressor: Tone.Compressor;
-  panner: Tone.Panner;
-  postInsert: Tone.Gain;
-  dry: Tone.Gain;
-  chorusSend: Tone.Gain;
+  saturation: WaveShaper;
+  compressor: Compressor;
+  panner: Panner;
+  postInsert: Gain;
+  dry: Gain;
+  chorusSend: Gain;
   chorus: LeanChorus;
-  delaySend: Tone.Gain;
+  delaySend: Gain;
   delay: LeanFeedbackDelay;
-  reverbSend: Tone.Gain;
+  reverbSend: Gain;
   reverb: LeanReverb;
-  channelFader: Tone.Gain;
+  channelFader: Gain;
   meter: LeanMeter;
   readonly ready: Promise<void>;
   dispose(): void;
 }
 
 export interface MasterGraph {
-  input: Tone.Gain;
+  input: Gain;
   performance: PerformanceFilter;
   highpass: LeanFilter;
   eq: LeanEq3;
-  compressor: Tone.Compressor;
-  limiter: Tone.Limiter;
-  fader: Tone.Gain;
+  compressor: Compressor;
+  limiter: Limiter;
+  fader: Gain;
   meter: LeanMeter;
   dispose(): void;
 }
 
-export function createTrackGraph(track: TrackKind, destination: Tone.ToneAudioNode): TrackGraph {
-  const input = new Tone.Gain(1);
+export function createTrackGraph(track: TrackKind, destination: SoundNode | AudioNode): TrackGraph {
+  const input = new Gain(1);
   const highpass = new LeanFilter({ type: "highpass", frequency: track === "drums" || track === "bass" ? 24 : 90, rolloff: -24 });
   const filter = new LeanFilter({ type: "lowpass", frequency: 8_000, Q: 0.8, rolloff: -12 });
   const eq = new LeanEq3({ low: 0, mid: 0, high: 0, lowFrequency: 220, highFrequency: 3_200 });
-  const saturation = new Tone.WaveShaper(softSaturationCurve(0.08), 4096);
+  const saturation = new WaveShaper(softSaturationCurve(0.08), 4096);
   saturation.oversample = "2x";
-  const compressor = new Tone.Compressor({ threshold: -8, ratio: 1.3, attack: 0.018, release: 0.16, knee: 8 });
-  const panner = new Tone.Panner(0);
-  const postInsert = new Tone.Gain(1);
-  const dry = new Tone.Gain(1);
-  const chorusSend = new Tone.Gain(0.04);
+  const compressor = new Compressor({ threshold: -8, ratio: 1.3, attack: 0.018, release: 0.16, knee: 8 });
+  const panner = new Panner(0);
+  const postInsert = new Gain(1);
+  const dry = new Gain(1);
+  const chorusSend = new Gain(0.04);
   const chorus = new LeanChorus({ frequency: track === "pad" ? 0.28 : 0.62, delayTime: 3.2, depth: 0.42, spread: 90 });
-  const delaySend = new Tone.Gain(0.02);
+  const delaySend = new Gain(0.02);
   const delay = new LeanFeedbackDelay({ delayTime: "8n", feedback: 0.14 });
-  const reverbSend = new Tone.Gain(0.03);
+  const reverbSend = new Gain(0.03);
   const reverb = new LeanReverb({ decay: track === "pad" ? 2.3 : 1.35, preDelay: 0.018 });
-  const channelFader = new Tone.Gain(0.8);
+  const channelFader = new Gain(0.8);
   const meter = new LeanMeter({ normalRange: true, smoothing: 0.8 });
 
   input.chain(highpass, filter, eq, saturation, compressor, panner, postInsert);
@@ -98,7 +98,7 @@ export function createTrackGraph(track: TrackKind, destination: Tone.ToneAudioNo
   channelFader.connect(destination);
   channelFader.connect(meter);
 
-  const nodes: Tone.ToneAudioNode[] = [
+  const nodes: SoundNode[] = [
     input,
     highpass,
     filter,
@@ -162,25 +162,26 @@ export function applyTrackMacros(
   graph.chorusSend.gain.rampTo(parameters.chorusSend, rampSeconds);
   graph.chorus.frequency.rampTo(parameters.chorusRate, rampSeconds);
   graph.delaySend.gain.rampTo(parameters.delaySend, rampSeconds);
-  graph.delay.delayTime.rampTo(parameters.delaySubdivision, rampSeconds);
+  // A note value at the tempo of this moment, as Tone's time param converted it.
+  graph.delay.delayTime.rampTo(toSeconds(parameters.delaySubdivision), rampSeconds);
   graph.delay.feedback.rampTo(parameters.feedback, rampSeconds);
   graph.reverbSend.gain.rampTo(parameters.reverbSend, rampSeconds);
 }
 
-export function createMasterGraph(destination: Tone.ToneAudioNode = Tone.getDestination()): MasterGraph {
-  const input = new Tone.Gain(1);
+export function createMasterGraph(destination: SoundNode | AudioNode = soundContext().destination): MasterGraph {
+  const input = new Gain(1);
   const performance = new PerformanceFilter();
   const highpass = new LeanFilter({ type: "highpass", frequency: 25, rolloff: -24 });
   const eq = new LeanEq3({ low: -0.25, mid: 0.35, high: -0.2, lowFrequency: 180, highFrequency: 4_800 });
-  const compressor = new Tone.Compressor({ threshold: -14, ratio: 1.6, attack: 0.03, release: 0.28, knee: 10 });
-  const limiter = new Tone.Limiter(-1.2);
+  const compressor = new Compressor({ threshold: -14, ratio: 1.6, attack: 0.03, release: 0.28, knee: 10 });
+  const limiter = new Limiter(-1.2);
   const ceilingLevel = 10 ** (-1.21 / 20);
-  const ceiling = new Tone.WaveShaper((sample) => Math.max(-ceilingLevel, Math.min(ceilingLevel, sample)), 4096);
-  const fader = new Tone.Gain(0.78);
+  const ceiling = new WaveShaper((sample) => Math.max(-ceilingLevel, Math.min(ceilingLevel, sample)), 4096);
+  const fader = new Gain(0.78);
   const meter = new LeanMeter({ normalRange: false, smoothing: 0.82 });
   input.chain(performance, highpass, eq, compressor, limiter, ceiling, fader, destination);
   fader.connect(meter);
-  const nodes: Tone.ToneAudioNode[] = [input, performance, highpass, eq, compressor, limiter, ceiling, fader, meter];
+  const nodes: SoundNode[] = [input, performance, highpass, eq, compressor, limiter, ceiling, fader, meter];
   return {
     input,
     performance,
