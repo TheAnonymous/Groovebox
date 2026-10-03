@@ -23,7 +23,7 @@ export interface LeanFeedbackDelayOptions {
 /** Same as Tone.FeedbackDelay with wet 1: send → delay → return, return → feedback gain → delay. */
 export class LeanFeedbackDelay extends SoundNode {
   readonly name = "LeanFeedbackDelay";
-  readonly input: GainNode;
+  readonly input: DelayNode;
   readonly output: GainNode;
   readonly delayTime: Param;
   readonly feedback: Param;
@@ -32,17 +32,17 @@ export class LeanFeedbackDelay extends SoundNode {
   constructor(options: LeanFeedbackDelayOptions) {
     super();
     const delaySeconds = toSeconds(options.delayTime);
-    this.input = this.context.createGain();
+    // The delay sums the send and the feedback itself (a unity input gain cost a node).
     const delay = this.context.createDelay(Math.max(options.maxDelay ?? 1, delaySeconds));
+    this.input = delay;
     this.output = this.context.createGain();
     const feedbackGain = this.context.createGain();
-    this.input.connect(delay);
     delay.connect(this.output);
     this.output.connect(feedbackGain);
     feedbackGain.connect(delay);
     this.delayTime = param(delay.delayTime, "time", delaySeconds);
     this.feedback = param(feedbackGain.gain, "normalRange", options.feedback);
-    this.nodes = [this.input, delay, this.output, feedbackGain];
+    this.nodes = [delay, this.output, feedbackGain];
   }
 
   override dispose(): this {

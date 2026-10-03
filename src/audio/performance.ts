@@ -10,7 +10,7 @@ import { param, SoundNode } from "klangwerk/tone";
  */
 export class PerformanceFilter extends SoundNode {
   readonly name = "PerformanceFilter";
-  readonly input: GainNode;
+  readonly input: BiquadFilterNode;
   readonly output: BiquadFilterNode;
   private readonly lowpass: BiquadFilterNode;
   private readonly highpass: BiquadFilterNode;
@@ -20,11 +20,11 @@ export class PerformanceFilter extends SoundNode {
 
   constructor() {
     super();
-    this.input = this.context.createGain();
     this.lowpass = this.biquad("lowpass", this.context.sampleRate / 2, 1.1);
     this.highpass = this.biquad("highpass", 0, 1.1);
     this.rise = this.biquad("highpass", 0, 1.35);
-    this.input.connect(this.lowpass);
+    // The lowpass sums what comes in itself (a unity input gain cost a node).
+    this.input = this.lowpass;
     this.lowpass.connect(this.highpass);
     this.highpass.connect(this.rise);
     this.output = this.rise;
@@ -72,7 +72,6 @@ export class PerformanceFilter extends SoundNode {
   override dispose(): this {
     super.dispose();
     if (this.snapTimer !== null) clearTimeout(this.snapTimer);
-    this.input.disconnect();
     this.lowpass.disconnect();
     this.highpass.disconnect();
     this.rise.disconnect();
